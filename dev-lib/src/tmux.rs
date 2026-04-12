@@ -1,9 +1,12 @@
 use std::path::Path;
-use std::process::Command;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use tmux_interface::{
+    CapturePane, ClearHistory, HasSession, KillServer, KillSession, ListPanes, ListSessions,
+    NewSession, SelectPane, SendKeys, SplitWindow, Tmux, TmuxOutput,
+};
 
 use crate::config::Layout;
 
@@ -53,60 +56,66 @@ pub trait TmuxBackend {
     ) -> Result<CommandOutput>;
 }
 
-/// Real tmux implementation via subprocess commands.
+/// Real tmux implementation using the [`tmux_interface`] typed command builders.
+///
+/// Every call goes through `Tmux::with_command(...)` or `Tmux::new().add_command(...)`
+/// which invoke the `tmux` binary once per batch — no direct `std::process::Command`
+/// in this module. Multi-step operations (`create_session` with a claude layout,
+/// `run_and_capture`'s marker setup) are batched into a single tmux invocation.
 pub struct RealTmux;
 
 impl RealTmux {
-    fn run(args: &[&str]) -> Result<String> {
-        let output = Command::new("tmux")
-            .args(args)
+    /// Run a single tmux command and bail on non-zero exit with the stderr.
+    fn run_one<'a, T>(cmd: T) -> Result<TmuxOutput>
+    where
+        T: Into<tmux_interface::TmuxCommand<'a>>,
+    {
+        let out = Tmux::with_command(cmd)
             .output()
             .context("Failed to run tmux")?;
-
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            bail!("tmux {} failed: {}", args.first().unwrap_or(&""), stderr);
+        if !out.success() {
+            let stderr = String::from_utf8_lossy(&out.0.stderr).trim().to_string();
+            bail!("tmux command failed: {stderr}");
         }
+        Ok(out)
     }
 
-    fn run_ok(args: &[&str]) -> Result<bool> {
-        let output = Command::new("tmux")
-            .args(args)
-            .output()
-            .context("Failed to run tmux")?;
-        Ok(output.status.success())
+    fn stdout_string(out: &TmuxOutput) -> String {
+        String::from_utf8_lossy(&out.0.stdout).into_owned()
+    }
+
+    fn stdout_trimmed(out: &TmuxOutput) -> String {
+        String::from_utf8_lossy(&out.0.stdout).trim().to_string()
     }
 }
 
 impl TmuxBackend for RealTmux {
     fn has_session(&self, name: &str) -> Result<bool> {
         let target = format!("={name}");
-        Self::run_ok(&["has-session", "-t", &target])
+        let status = Tmux::with_command(HasSession::new().target_session(target))
+            .status()
+            .context("Failed to run tmux")?;
+        Ok(status.success())
     }
 
     fn list_sessions(&self) -> Result<Vec<SessionInfo>> {
-        let output = Command::new("tmux")
-            .args([
-                "list-sessions",
-                "-F",
+        // Swallow errors (no server running, no sessions) into an empty list
+        // — matches the original shell-out semantics.
+        let out =
+            Tmux::with_command(ListSessions::new().format(
                 "#{session_name}|#{session_windows}|#{session_attached}|#{session_activity}",
-            ])
+            ))
             .output();
-
-        let output = match output {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-            // No server running or no sessions
+        let text = match out {
+            Ok(o) if o.success() => Self::stdout_trimmed(&o),
             _ => return Ok(Vec::new()),
         };
-
-        if output.is_empty() {
+        if text.is_empty() {
             return Ok(Vec::new());
         }
 
         let mut sessions = Vec::new();
-        for line in output.lines() {
+        for line in text.lines() {
             let parts: Vec<&str> = line.split('|').collect();
             if parts.len() < 4 {
                 continue;
@@ -130,30 +139,50 @@ impl TmuxBackend for RealTmux {
                 layout,
             });
         }
-
         Ok(sessions)
     }
 
     fn list_panes(&self, session: &str) -> Result<usize> {
         let target = format!("{session}:1");
-        let output = Self::run(&["list-panes", "-t", &target, "-F", "#{pane_index}"])?;
-        Ok(output.lines().count())
+        let out = Self::run_one(ListPanes::new().target(target).format("#{pane_index}"))?;
+        Ok(Self::stdout_trimmed(&out).lines().count())
     }
 
     fn create_session(&self, name: &str, path: &Path, layout: &Layout) -> Result<()> {
-        let path_str = path.to_string_lossy();
+        let path_str = path.to_string_lossy().into_owned();
 
-        // Create detached session
-        Self::run(&["new-session", "-d", "-s", name, "-c", &path_str])?;
+        // Create detached session (standalone — its success is a prereq for
+        // the layout batch below, so we don't combine them).
+        Self::run_one(
+            NewSession::new()
+                .detached()
+                .session_name(name.to_string())
+                .start_directory(path_str.clone()),
+        )?;
 
         if *layout == Layout::Claude {
-            // Split vertically, run claude in left pane, focus right pane
-            Self::run(&["split-window", "-h", "-t", name, "-c", &path_str])?;
+            // Split → select left → type `claude` → select right, all in one
+            // tmux invocation (four add_commands, one fork+exec).
             let left = format!("{name}:1.1");
-            Self::run(&["select-pane", "-t", &left])?;
-            Self::run(&["send-keys", "-t", &left, "claude", "Enter"])?;
             let right = format!("{name}:1.2");
-            Self::run(&["select-pane", "-t", &right])?;
+            let out = Tmux::new()
+                .add_command(
+                    SplitWindow::new()
+                        .horizontal()
+                        .target_pane(name.to_string())
+                        .start_directory(path_str),
+                )
+                .add_command(SelectPane::new().target_pane(left.clone()))
+                .add_command(SendKeys::new().target_pane(left).key("claude").key("Enter"))
+                .add_command(SelectPane::new().target_pane(right))
+                .output()
+                .context("Failed to run tmux claude layout batch")?;
+            if !out.success() {
+                bail!(
+                    "claude layout setup failed: {}",
+                    String::from_utf8_lossy(&out.0.stderr).trim()
+                );
+            }
         }
 
         Ok(())
@@ -161,38 +190,45 @@ impl TmuxBackend for RealTmux {
 
     fn kill_session(&self, name: &str) -> Result<()> {
         let target = format!("={name}");
-        Self::run(&["kill-session", "-t", &target])?;
+        Self::run_one(KillSession::new().target_session(target))?;
         Ok(())
     }
 
     fn kill_server(&self) -> Result<()> {
-        Self::run(&["kill-server"])?;
+        Self::run_one(KillServer::new())?;
         Ok(())
     }
 
     fn send_keys(&self, target: &str, keys: &str) -> Result<()> {
-        Self::run(&["send-keys", "-t", target, keys, "Enter"])?;
+        Self::run_one(
+            SendKeys::new()
+                .target_pane(target.to_string())
+                .key(keys.to_string())
+                .key("Enter"),
+        )?;
         Ok(())
     }
 
     fn split_window_horizontal(&self, _session: &str, path: &Path) -> Result<()> {
-        let path_str = path.to_string_lossy();
-        Self::run(&["split-window", "-hb", "-c", &path_str])?;
+        let path_str = path.to_string_lossy().into_owned();
+        Self::run_one(
+            SplitWindow::new()
+                .horizontal()
+                .before()
+                .start_directory(path_str),
+        )?;
         Ok(())
     }
 
     fn select_pane(&self, target: &str) -> Result<()> {
-        Self::run(&["select-pane", "-t", target])?;
+        Self::run_one(SelectPane::new().target_pane(target.to_string()))?;
         Ok(())
     }
 
     fn session_count(&self) -> Result<usize> {
-        let output = Command::new("tmux").args(["list-sessions"]).output();
-
-        match output {
-            Ok(o) if o.status.success() => {
-                Ok(String::from_utf8_lossy(&o.stdout).trim().lines().count())
-            }
+        let out = Tmux::with_command(ListSessions::new()).output();
+        match out {
+            Ok(o) if o.success() => Ok(Self::stdout_trimmed(&o).lines().count()),
             _ => Ok(0),
         }
     }
@@ -207,22 +243,51 @@ impl TmuxBackend for RealTmux {
         let marker_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         let start_marker = format!("START_{marker_id}");
         let end_prefix = format!("END_{marker_id}");
+        let start_cmd = format!("echo {start_marker}");
         let end_cmd = format!("echo \"{end_prefix} $?\"");
+        let target_owned = target.to_string();
 
-        Self::run(&["clear-history", "-t", target])?;
-        Self::run(&[
-            "send-keys",
-            "-t",
-            target,
-            &format!("echo {start_marker}"),
-            "Enter",
-        ])?;
-        Self::run(&["send-keys", "-t", target, command, "Enter"])?;
-        Self::run(&["send-keys", "-t", target, &end_cmd, "Enter"])?;
+        // Batch the four setup commands into a single tmux invocation so the
+        // clear + start marker + command + end marker arrive back-to-back
+        // without four separate fork+exec round-trips.
+        let out = Tmux::new()
+            .add_command(ClearHistory::new().target_pane(target_owned.clone()))
+            .add_command(
+                SendKeys::new()
+                    .target_pane(target_owned.clone())
+                    .key(start_cmd)
+                    .key("Enter"),
+            )
+            .add_command(
+                SendKeys::new()
+                    .target_pane(target_owned.clone())
+                    .key(command.to_string())
+                    .key("Enter"),
+            )
+            .add_command(
+                SendKeys::new()
+                    .target_pane(target_owned.clone())
+                    .key(end_cmd)
+                    .key("Enter"),
+            )
+            .output()
+            .context("Failed to run tmux run_and_capture setup batch")?;
+        if !out.success() {
+            bail!(
+                "run_and_capture setup failed: {}",
+                String::from_utf8_lossy(&out.0.stderr).trim()
+            );
+        }
 
         let started = Instant::now();
         loop {
-            let capture = Self::run(&["capture-pane", "-p", "-S", "-", "-t", target])?;
+            let cap = Self::run_one(
+                CapturePane::new()
+                    .stdout() // -p: print captured content to stdout
+                    .start_line("-") // -S -: full scrollback
+                    .target_pane(target_owned.clone()),
+            )?;
+            let capture = Self::stdout_string(&cap);
 
             if let Some((stdout, exit_code)) = parse_captured(&capture, &start_marker, &end_prefix)
             {
