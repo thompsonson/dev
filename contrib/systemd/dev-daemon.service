@@ -1,0 +1,15 @@
+[Unit]
+Description=dev tmux control-plane daemon
+Documentation=https://github.com/thompsonson/dev
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/dev daemon
+Restart=on-failure
+RestartSec=2
+# The daemon shells out to `tmux`, so it needs the user's normal PATH to find it.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
