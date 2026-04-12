@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, Write};
 use std::process::Command;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use dev_lib::api::DevManager;
 use dev_lib::config::Layout;
@@ -100,6 +100,8 @@ fn run() -> Result<()> {
             cmd_open(project, Some(Layout::Claude))
         }
         Some("layout") => cmd_layout(args.get(1).map(|s| s.as_str())),
+        Some("daemon") => cmd_daemon(),
+        Some("run-in") => cmd_run_in(&args[1..]),
         Some(project) => cmd_open(project, None),
     }
 }
@@ -522,4 +524,122 @@ fn forward_remote(host: &str, args: &[&str]) -> ! {
         eprintln!("Remote forwarding not supported on this platform");
         std::process::exit(1);
     }
+}
+
+fn cmd_daemon() -> Result<()> {
+    let path = dev_lib::daemon::default_socket_path()?;
+    info(&format!("Starting dev daemon on {}", path.display()));
+    dev_lib::daemon::run(&path)
+}
+
+fn cmd_run_in(args: &[String]) -> Result<()> {
+    // Parse: dev run-in <session>[:<window>.<pane>] <command...> [--timeout N] [--json]
+    let mut positional: Vec<&str> = Vec::new();
+    let mut timeout_ms: u64 = 30_000;
+    let mut json_out = false;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            "--json" => {
+                json_out = true;
+                i += 1;
+            }
+            "--timeout" => {
+                let v = args
+                    .get(i + 1)
+                    .unwrap_or_else(|| die("--timeout requires a value"));
+                let secs: u64 = v
+                    .parse()
+                    .unwrap_or_else(|_| die("--timeout must be an integer (seconds)"));
+                timeout_ms = secs * 1000;
+                i += 2;
+            }
+            _ => {
+                positional.push(a);
+                i += 1;
+            }
+        }
+    }
+    if positional.len() < 2 {
+        die("Usage: dev run-in <session>[:<window>.<pane>] <command> [--timeout N] [--json]");
+    }
+    let target = positional[0];
+    let command = positional[1..].join(" ");
+
+    // Split "session" or "session:window.pane"
+    let (session, pane) = match target.split_once(':') {
+        Some((s, p)) => (s, p),
+        None => (target, "1.1"),
+    };
+
+    let body = serde_json::json!({
+        "command": command,
+        "timeout_ms": timeout_ms,
+    });
+    let path = format!("/sessions/{session}/panes/{pane}/run");
+    let resp = http_over_uds("POST", &path, Some(&body))?;
+
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+    } else {
+        let stdout = resp.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
+        let exit = resp.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(-1);
+        let dur = resp
+            .get("duration_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        print!("{stdout}");
+        if !stdout.ends_with('\n') {
+            println!();
+        }
+        eprintln!("exit={exit} duration_ms={dur}");
+        if exit != 0 {
+            std::process::exit(exit as i32);
+        }
+    }
+    Ok(())
+}
+
+fn http_over_uds(
+    method: &str,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<serde_json::Value> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let socket_path = dev_lib::daemon::default_socket_path()?;
+    let mut stream = UnixStream::connect(&socket_path).with_context(|| {
+        format!(
+            "connect to dev daemon at {} (is `dev daemon` running?)",
+            socket_path.display()
+        )
+    })?;
+
+    let body_bytes = match body {
+        Some(v) => serde_json::to_vec(v)?,
+        None => Vec::new(),
+    };
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body_bytes.len()
+    );
+    stream.write_all(req.as_bytes())?;
+    if !body_bytes.is_empty() {
+        stream.write_all(&body_bytes)?;
+    }
+    stream.flush()?;
+
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw)?;
+    // Split headers from body on the CRLFCRLF boundary.
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| anyhow::anyhow!("malformed response"))?;
+    let body_start = split + 4;
+    let body_slice = &raw[body_start..];
+    let v: serde_json::Value = serde_json::from_slice(body_slice)?;
+    Ok(v)
 }
