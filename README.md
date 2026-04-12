@@ -33,11 +33,19 @@ If you just want to SSH into a box and `dev my-project` into a session that surv
 ```bash
 git clone git@github.com:thompsonson/dev.git
 cd dev
+scripts/install.sh              # build + install to ~/.local/bin/dev
+scripts/install.sh --systemd    # also install + start a systemd --user service (Linux)
+scripts/install.sh --uninstall  # remove binary (and unit, if present)
+```
+
+The install script is a thin wrapper around `cargo build --release` + `install`. If you'd rather do it by hand:
+
+```bash
 cargo build --release
 install -m 0755 target/release/dev ~/.local/bin/dev
 ```
 
-Requires `tmux` on `PATH`. Tested on Linux and macOS.
+Requires `tmux` on `PATH`. Tested on Linux and macOS. The `--systemd` flag is Linux-only; the unit template lives at [`contrib/systemd/dev-daemon.service`](contrib/systemd/dev-daemon.service).
 
 ### Commands
 
@@ -98,7 +106,14 @@ Socket path resolution:
 1. `$XDG_RUNTIME_DIR/dev.sock` if the env var is set (Linux systemd user sessions have this).
 2. `~/.local/run/dev.sock` otherwise.
 
-The daemon runs in the foreground. It removes a stale socket on startup and errors clearly if another `dev daemon` is already listening. No PID file, no detach — run it under your preferred supervisor (`systemd --user`, `tmux` pane, shell job, `dev` itself if you're feeling recursive).
+The daemon runs in the foreground. It removes a stale socket on startup and errors clearly if another `dev daemon` is already listening. No PID file, no detach — run it under your preferred supervisor. The repo ships a `systemd --user` unit for that:
+
+```bash
+scripts/install.sh --systemd
+journalctl --user -u dev-daemon.service -f
+```
+
+Other supervisor options that work fine: a `tmux` pane, a shell job, `dev` itself if you're feeling recursive.
 
 ### Transport
 
