@@ -1,11 +1,11 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use tmux_interface::{
-    CapturePane, ClearHistory, HasSession, KillServer, KillSession, ListPanes, ListSessions,
-    NewSession, SelectPane, SendKeys, SplitWindow, Tmux, TmuxOutput,
+    DisplayMessage, HasSession, KillServer, KillSession, ListPanes, ListSessions, NewSession,
+    RunShell, SelectPane, SendKeys, SplitWindow, Tmux, TmuxOutput,
 };
 
 use crate::config::Layout;
@@ -78,10 +78,6 @@ impl RealTmux {
             bail!("tmux command failed: {stderr}");
         }
         Ok(out)
-    }
-
-    fn stdout_string(out: &TmuxOutput) -> String {
-        String::from_utf8_lossy(&out.0.stdout).into_owned()
     }
 
     fn stdout_trimmed(out: &TmuxOutput) -> String {
@@ -239,120 +235,157 @@ impl TmuxBackend for RealTmux {
         command: &str,
         timeout: Duration,
     ) -> Result<CommandOutput> {
-        // Short UUID — 12 hex chars is plenty for uniqueness inside a single pane.
+        // Short UUID kept as the opaque identifier we return (history tracking)
+        // — the marker-sandwich parsing it used to drive is gone.
         let marker_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
-        let start_marker = format!("START_{marker_id}");
-        let end_prefix = format!("END_{marker_id}");
-        let start_cmd = format!("echo {start_marker}");
-        let end_cmd = format!("echo \"{end_prefix} $?\"");
         let target_owned = target.to_string();
 
-        // Batch the four setup commands into a single tmux invocation so the
-        // clear + start marker + command + end marker arrive back-to-back
-        // without four separate fork+exec round-trips.
-        let out = Tmux::new()
-            .add_command(ClearHistory::new().target_pane(target_owned.clone()))
-            .add_command(
-                SendKeys::new()
-                    .target_pane(target_owned.clone())
-                    .key(start_cmd)
-                    .key("Enter"),
-            )
-            .add_command(
-                SendKeys::new()
-                    .target_pane(target_owned.clone())
-                    .key(command.to_string())
-                    .key("Enter"),
-            )
-            .add_command(
-                SendKeys::new()
-                    .target_pane(target_owned.clone())
-                    .key(end_cmd)
-                    .key("Enter"),
-            )
-            .output()
-            .context("Failed to run tmux run_and_capture setup batch")?;
-        if !out.success() {
-            bail!(
-                "run_and_capture setup failed: {}",
-                String::from_utf8_lossy(&out.0.stderr).trim()
-            );
-        }
+        // Staging files: stdout, stderr, exit code. The daemon owns this cache
+        // dir and garbage-collects stale entries on its next run.
+        let cache = runs_cache_dir()?;
+        let stdout_path = cache.join(format!("{marker_id}.out"));
+        let stderr_path = cache.join(format!("{marker_id}.err"));
+        let exit_path = cache.join(format!("{marker_id}.exit"));
+        // Best-effort clean slate.
+        let _ = std::fs::remove_file(&stdout_path);
+        let _ = std::fs::remove_file(&stderr_path);
+        let _ = std::fs::remove_file(&exit_path);
 
+        // Query the pane's current working directory so commands run in the
+        // same place the user's interactive shell is sitting — important for
+        // things like `cargo test` that depend on being inside a crate.
+        let cwd_out = Self::run_one(
+            DisplayMessage::new()
+                .print()
+                .target_pane(target_owned.clone())
+                .message("#{pane_current_path}"),
+        )?;
+        let pane_cwd = Self::stdout_trimmed(&cwd_out);
+
+        // Build a /bin/sh one-liner:
+        //   cd '<cwd>' && ( <cmd> ) > '<out>' 2> '<err>'; echo $? > '<exit>'
+        //
+        // `( ... )` subshell means the command's own stdout/stderr go into
+        // the staging files instead of the pane — the pane sees nothing at
+        // all because we dispatch via `tmux run-shell -b`, not `send-keys`.
+        //
+        // Semantic change from the previous marker-sandwich implementation:
+        // commands now run in a /bin/sh subshell under tmux server's
+        // environment, not in the pane's interactive shell. cd/export/alias
+        // changes do NOT propagate to the pane. This is the right trade-off
+        // for agent-driven command execution (AtomicGuard effectors, chops
+        // web-ui run buttons); if you want commands to mutate the pane's
+        // shell state, use `send_keys` directly.
+        let wrapped = format!(
+            "cd {cwd} && ( {cmd} ) > {out} 2> {err}; echo $? > {exit}",
+            cwd = sh_single_quote(&pane_cwd),
+            cmd = command,
+            out = sh_single_quote(&stdout_path.to_string_lossy()),
+            err = sh_single_quote(&stderr_path.to_string_lossy()),
+            exit = sh_single_quote(&exit_path.to_string_lossy()),
+        );
+
+        // `run-shell -b` dispatches the command to tmux server's /bin/sh and
+        // returns immediately. The pane is completely untouched.
+        Self::run_one(RunShell::new().background().shell_command(wrapped))
+            .context("failed to dispatch run-shell")?;
+
+        // Poll for the exit file. Its existence is the completion signal —
+        // no pane scraping, no marker parsing.
         let started = Instant::now();
+        let poll = Duration::from_millis(50);
         loop {
-            let cap = Self::run_one(
-                CapturePane::new()
-                    .stdout() // -p: print captured content to stdout
-                    .start_line("-") // -S -: full scrollback
-                    .target_pane(target_owned.clone()),
-            )?;
-            let capture = Self::stdout_string(&cap);
-
-            if let Some((stdout, exit_code)) = parse_captured(&capture, &start_marker, &end_prefix)
-            {
+            if exit_path.exists() {
+                let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
+                let exit_raw = std::fs::read_to_string(&exit_path).unwrap_or_default();
+                let exit_code = exit_raw.trim().parse::<i32>().ok();
+                // Best-effort cleanup.
+                let _ = std::fs::remove_file(&stdout_path);
+                let _ = std::fs::remove_file(&stderr_path);
+                let _ = std::fs::remove_file(&exit_path);
                 return Ok(CommandOutput {
                     stdout,
-                    exit_code: Some(exit_code),
+                    exit_code,
                     duration_ms: started.elapsed().as_millis(),
                     marker_id,
                 });
             }
-
             if started.elapsed() >= timeout {
-                bail!(
-                    "run_and_capture timed out after {:?} waiting for marker {}",
-                    timeout,
-                    end_prefix
-                );
+                // Cleanup staging files even on timeout. The orphaned
+                // background command will keep running; that's a deliberate
+                // choice matching the previous behaviour — we don't try to
+                // kill it because we don't know what it was doing.
+                let _ = std::fs::remove_file(&stdout_path);
+                let _ = std::fs::remove_file(&stderr_path);
+                let _ = std::fs::remove_file(&exit_path);
+                bail!("run_and_capture timed out after {:?}", timeout);
             }
-
-            sleep(Duration::from_millis(100));
+            sleep(poll);
         }
     }
 }
 
-/// Slice a tmux `capture-pane` output between the start/end markers and parse
-/// the exit code from the end-marker line. Returns `None` if the end marker has
-/// not been emitted yet.
-///
-/// The end-marker line must match exactly `"{end_prefix} <digits>"` — this
-/// prevents a false early match if the command itself echoes `end_prefix`
-/// somewhere in its output (the extra ` <digits>` suffix disambiguates).
-fn parse_captured(capture: &str, start_marker: &str, end_prefix: &str) -> Option<(String, i32)> {
-    let lines: Vec<&str> = capture.lines().collect();
+/// Per-daemon cache directory for `run_and_capture` staging files. Lives under
+/// `$XDG_CACHE_HOME/dev-daemon/runs` (fallback `~/.cache/...`).
+fn runs_cache_dir() -> Result<PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
+        .context("no cache dir available (neither XDG_CACHE_HOME nor HOME is set)")?;
+    let dir = base.join("dev-daemon").join("runs");
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating cache dir {}", dir.display()))?;
+    Ok(dir)
+}
 
-    // Find the last line that looks like "END_<uuid> <digits>" — scanning from
-    // the bottom so we pick up the most recent completion.
-    let mut end_idx = None;
-    let mut exit_code = 0i32;
-    for (i, line) in lines.iter().enumerate().rev() {
-        let trimmed = line.trim_end();
-        if let Some(rest) = trimmed.strip_prefix(end_prefix) {
-            let rest = rest.trim_start();
-            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '-') {
-                if let Ok(n) = rest.parse::<i32>() {
-                    end_idx = Some(i);
-                    exit_code = n;
-                    break;
-                }
-            }
+/// POSIX single-quote escape a string for safe embedding in a `/bin/sh`
+/// command. Wraps in `'...'` and replaces internal `'` with `'\''`.
+fn sh_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
         }
     }
-    let end_idx = end_idx?;
+    out.push('\'');
+    out
+}
 
-    // Find the matching start marker above the end marker. We look for a line
-    // whose trailing content equals `start_marker` — tmux may prefix with the
-    // shell prompt echo, so an exact-line match is too strict.
-    let start_idx = lines[..end_idx]
-        .iter()
-        .rposition(|line| line.trim_end().ends_with(start_marker))?;
+#[cfg(test)]
+mod sh_quote_tests {
+    use super::sh_single_quote;
 
-    // Command output lives strictly between start and end. The line right
-    // after START is typically the command echo itself, which we keep — post-
-    // guards can strip it if needed; the raw stream is more useful for debug.
-    let stdout = lines[start_idx + 1..end_idx].join("\n");
-    Some((stdout, exit_code))
+    #[test]
+    fn plain_string_wrapped_in_quotes() {
+        assert_eq!(sh_single_quote("hello"), "'hello'");
+    }
+
+    #[test]
+    fn path_with_spaces() {
+        assert_eq!(
+            sh_single_quote("/tmp/path with space/foo.txt"),
+            "'/tmp/path with space/foo.txt'"
+        );
+    }
+
+    #[test]
+    fn embedded_single_quote_escaped() {
+        // POSIX idiom: close quote, literal-escaped quote, reopen quote.
+        assert_eq!(sh_single_quote("it's"), r#"'it'\''s'"#);
+    }
+
+    #[test]
+    fn empty_string_still_quoted() {
+        assert_eq!(sh_single_quote(""), "''");
+    }
+
+    #[test]
+    fn multiple_single_quotes() {
+        assert_eq!(sh_single_quote("a'b'c"), r#"'a'\''b'\''c'"#);
+    }
 }
 
 #[cfg(test)]
@@ -474,74 +507,5 @@ pub mod mock {
                 marker_id: "mock-marker".to_string(),
             })
         }
-    }
-}
-
-#[cfg(test)]
-mod parse_tests {
-    use super::parse_captured;
-
-    #[test]
-    fn parses_stdout_and_exit_code() {
-        let capture = "\
-$ echo START_abc123
-START_abc123
-$ echo hello
-hello
-$ echo \"END_abc123 $?\"
-END_abc123 0
-";
-        let (stdout, code) = parse_captured(capture, "START_abc123", "END_abc123").unwrap();
-        assert_eq!(code, 0);
-        assert!(stdout.contains("hello"));
-        // The literal end-marker line ("END_abc123 0") must be excluded, but a
-        // command-echo line containing the marker text (e.g. `$ echo "END_abc123 $?"`)
-        // stays in — it's real pane output between the markers.
-        assert!(!stdout.lines().any(|l| l.trim_end() == "END_abc123 0"));
-        assert!(!stdout.lines().any(|l| l.trim_end() == "START_abc123"));
-    }
-
-    #[test]
-    fn captures_non_zero_exit() {
-        let capture = "START_xyz\nboom\nEND_xyz 1\n";
-        let (_, code) = parse_captured(capture, "START_xyz", "END_xyz").unwrap();
-        assert_eq!(code, 1);
-    }
-
-    #[test]
-    fn returns_none_when_end_marker_absent() {
-        let capture = "START_xyz\nstill running\n";
-        assert!(parse_captured(capture, "START_xyz", "END_xyz").is_none());
-    }
-
-    #[test]
-    fn ignores_end_prefix_without_digit_suffix() {
-        // Command echoes the marker text but without the "<space><digits>" tail —
-        // must not be mistaken for the real end marker.
-        let capture = "\
-START_xyz
-user said END_xyz which is cool
-END_xyz 0
-";
-        let (stdout, code) = parse_captured(capture, "START_xyz", "END_xyz").unwrap();
-        assert_eq!(code, 0);
-        assert!(stdout.contains("user said END_xyz which is cool"));
-    }
-
-    #[test]
-    fn picks_most_recent_end_marker() {
-        let capture = "\
-START_xyz
-first
-END_xyz 0
-noise
-START_xyz
-second
-END_xyz 7
-";
-        let (stdout, code) = parse_captured(capture, "START_xyz", "END_xyz").unwrap();
-        assert_eq!(code, 7);
-        assert!(stdout.contains("second"));
-        assert!(!stdout.contains("first"));
     }
 }
