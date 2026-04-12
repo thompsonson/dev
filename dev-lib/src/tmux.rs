@@ -1,9 +1,20 @@
 use std::path::Path;
 use std::process::Command;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
 use crate::config::Layout;
+
+/// Result of running a command inside a tmux pane and capturing its output.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CommandOutput {
+    pub stdout: String,
+    pub exit_code: Option<i32>,
+    pub duration_ms: u128,
+    pub marker_id: String,
+}
 
 /// Information about an active tmux session.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -27,6 +38,19 @@ pub trait TmuxBackend {
     fn split_window_horizontal(&self, session: &str, path: &Path) -> Result<()>;
     fn select_pane(&self, target: &str) -> Result<()>;
     fn session_count(&self) -> Result<usize>;
+
+    /// Run a command inside a tmux pane and synchronously capture stdout + exit code.
+    ///
+    /// Uses the "marker sandwich" technique: clears the pane history, sends a
+    /// unique start marker, sends the command, then sends an end marker that
+    /// also captures `$?`. Polls `capture-pane` until the end marker appears
+    /// or `timeout` elapses.
+    fn run_and_capture(
+        &self,
+        target: &str,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<CommandOutput>;
 }
 
 /// Real tmux implementation via subprocess commands.
@@ -172,6 +196,92 @@ impl TmuxBackend for RealTmux {
             _ => Ok(0),
         }
     }
+
+    fn run_and_capture(
+        &self,
+        target: &str,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<CommandOutput> {
+        // Short UUID — 12 hex chars is plenty for uniqueness inside a single pane.
+        let marker_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+        let start_marker = format!("START_{marker_id}");
+        let end_prefix = format!("END_{marker_id}");
+        let end_cmd = format!("echo \"{end_prefix} $?\"");
+
+        Self::run(&["clear-history", "-t", target])?;
+        Self::run(&["send-keys", "-t", target, &format!("echo {start_marker}"), "Enter"])?;
+        Self::run(&["send-keys", "-t", target, command, "Enter"])?;
+        Self::run(&["send-keys", "-t", target, &end_cmd, "Enter"])?;
+
+        let started = Instant::now();
+        loop {
+            let capture = Self::run(&["capture-pane", "-p", "-S", "-", "-t", target])?;
+
+            if let Some((stdout, exit_code)) = parse_captured(&capture, &start_marker, &end_prefix)
+            {
+                return Ok(CommandOutput {
+                    stdout,
+                    exit_code: Some(exit_code),
+                    duration_ms: started.elapsed().as_millis(),
+                    marker_id,
+                });
+            }
+
+            if started.elapsed() >= timeout {
+                bail!(
+                    "run_and_capture timed out after {:?} waiting for marker {}",
+                    timeout,
+                    end_prefix
+                );
+            }
+
+            sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// Slice a tmux `capture-pane` output between the start/end markers and parse
+/// the exit code from the end-marker line. Returns `None` if the end marker has
+/// not been emitted yet.
+///
+/// The end-marker line must match exactly `"{end_prefix} <digits>"` — this
+/// prevents a false early match if the command itself echoes `end_prefix`
+/// somewhere in its output (the extra ` <digits>` suffix disambiguates).
+fn parse_captured(capture: &str, start_marker: &str, end_prefix: &str) -> Option<(String, i32)> {
+    let lines: Vec<&str> = capture.lines().collect();
+
+    // Find the last line that looks like "END_<uuid> <digits>" — scanning from
+    // the bottom so we pick up the most recent completion.
+    let mut end_idx = None;
+    let mut exit_code = 0i32;
+    for (i, line) in lines.iter().enumerate().rev() {
+        let trimmed = line.trim_end();
+        if let Some(rest) = trimmed.strip_prefix(end_prefix) {
+            let rest = rest.trim_start();
+            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '-') {
+                if let Ok(n) = rest.parse::<i32>() {
+                    end_idx = Some(i);
+                    exit_code = n;
+                    break;
+                }
+            }
+        }
+    }
+    let end_idx = end_idx?;
+
+    // Find the matching start marker above the end marker. We look for a line
+    // whose trailing content equals `start_marker` — tmux may prefix with the
+    // shell prompt echo, so an exact-line match is too strict.
+    let start_idx = lines[..end_idx]
+        .iter()
+        .rposition(|line| line.trim_end().ends_with(start_marker))?;
+
+    // Command output lives strictly between start and end. The line right
+    // after START is typically the command echo itself, which we keep — post-
+    // guards can strip it if needed; the raw stream is more useful for debug.
+    let stdout = lines[start_idx + 1..end_idx].join("\n");
+    Some((stdout, exit_code))
 }
 
 #[cfg(test)]
@@ -184,6 +294,9 @@ pub mod mock {
         pub sessions: RefCell<Vec<SessionInfo>>,
         pub created: RefCell<Vec<(String, String, String)>>, // name, path, layout
         pub killed: RefCell<Vec<String>>,
+        pub run_calls: RefCell<Vec<(String, String)>>, // target, command
+        pub run_stdout: RefCell<String>,
+        pub run_exit_code: RefCell<i32>,
     }
 
     impl MockTmux {
@@ -192,6 +305,9 @@ pub mod mock {
                 sessions: RefCell::new(Vec::new()),
                 created: RefCell::new(Vec::new()),
                 killed: RefCell::new(Vec::new()),
+                run_calls: RefCell::new(Vec::new()),
+                run_stdout: RefCell::new(String::new()),
+                run_exit_code: RefCell::new(0),
             }
         }
 
@@ -264,5 +380,91 @@ pub mod mock {
         fn session_count(&self) -> Result<usize> {
             Ok(self.sessions.borrow().len())
         }
+
+        fn run_and_capture(
+            &self,
+            target: &str,
+            command: &str,
+            _timeout: Duration,
+        ) -> Result<CommandOutput> {
+            self.run_calls
+                .borrow_mut()
+                .push((target.to_string(), command.to_string()));
+            Ok(CommandOutput {
+                stdout: self.run_stdout.borrow().clone(),
+                exit_code: Some(*self.run_exit_code.borrow()),
+                duration_ms: 1,
+                marker_id: "mock-marker".to_string(),
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::parse_captured;
+
+    #[test]
+    fn parses_stdout_and_exit_code() {
+        let capture = "\
+$ echo START_abc123
+START_abc123
+$ echo hello
+hello
+$ echo \"END_abc123 $?\"
+END_abc123 0
+";
+        let (stdout, code) = parse_captured(capture, "START_abc123", "END_abc123").unwrap();
+        assert_eq!(code, 0);
+        assert!(stdout.contains("hello"));
+        // The literal end-marker line ("END_abc123 0") must be excluded, but a
+        // command-echo line containing the marker text (e.g. `$ echo "END_abc123 $?"`)
+        // stays in — it's real pane output between the markers.
+        assert!(!stdout.lines().any(|l| l.trim_end() == "END_abc123 0"));
+        assert!(!stdout.lines().any(|l| l.trim_end() == "START_abc123"));
+    }
+
+    #[test]
+    fn captures_non_zero_exit() {
+        let capture = "START_xyz\nboom\nEND_xyz 1\n";
+        let (_, code) = parse_captured(capture, "START_xyz", "END_xyz").unwrap();
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn returns_none_when_end_marker_absent() {
+        let capture = "START_xyz\nstill running\n";
+        assert!(parse_captured(capture, "START_xyz", "END_xyz").is_none());
+    }
+
+    #[test]
+    fn ignores_end_prefix_without_digit_suffix() {
+        // Command echoes the marker text but without the "<space><digits>" tail —
+        // must not be mistaken for the real end marker.
+        let capture = "\
+START_xyz
+user said END_xyz which is cool
+END_xyz 0
+";
+        let (stdout, code) = parse_captured(capture, "START_xyz", "END_xyz").unwrap();
+        assert_eq!(code, 0);
+        assert!(stdout.contains("user said END_xyz which is cool"));
+    }
+
+    #[test]
+    fn picks_most_recent_end_marker() {
+        let capture = "\
+START_xyz
+first
+END_xyz 0
+noise
+START_xyz
+second
+END_xyz 7
+";
+        let (stdout, code) = parse_captured(capture, "START_xyz", "END_xyz").unwrap();
+        assert_eq!(code, 7);
+        assert!(stdout.contains("second"));
+        assert!(!stdout.contains("first"));
     }
 }
