@@ -210,7 +210,13 @@ impl TmuxBackend for RealTmux {
         let end_cmd = format!("echo \"{end_prefix} $?\"");
 
         Self::run(&["clear-history", "-t", target])?;
-        Self::run(&["send-keys", "-t", target, &format!("echo {start_marker}"), "Enter"])?;
+        Self::run(&[
+            "send-keys",
+            "-t",
+            target,
+            &format!("echo {start_marker}"),
+            "Enter",
+        ])?;
         Self::run(&["send-keys", "-t", target, command, "Enter"])?;
         Self::run(&["send-keys", "-t", target, &end_cmd, "Enter"])?;
 
@@ -297,6 +303,12 @@ pub mod mock {
         pub run_calls: RefCell<Vec<(String, String)>>, // target, command
         pub run_stdout: RefCell<String>,
         pub run_exit_code: RefCell<i32>,
+    }
+
+    impl Default for MockTmux {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl MockTmux {
