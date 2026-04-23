@@ -80,6 +80,10 @@ some-remote=default@other-host
 
 Format: `project=layout[:path][@host]`. `layout` is `default` or `claude`; `:path` lets a project key point at a custom directory; `@host` forwards the command via SSH to another machine.
 
+### With devenv
+
+If a project has a `devenv.nix` + `.envrc` (containing `use devenv`), the tmux pane auto-activates the devenv environment on entry — toolchain and scripts are on PATH without any `dev`-side code. Full walkthrough (prerequisites, per-project setup, troubleshooting) in [`docs/devenv-workflow.md`](docs/devenv-workflow.md).
+
 ---
 
 ## Integrator guide
