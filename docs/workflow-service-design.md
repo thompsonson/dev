@@ -37,6 +37,33 @@ Workflows are opaque to the service. What they contain (action pairs, generators
 | Authentication / authorisation beyond filesystem permissions | v1 is single-user on pop-mini; multi-tenant comes later |
 | Persistence of artifact DAGs | The workflow runtime owns R; the service only tracks dispatches |
 
+## The meta-workflow lens — apply before choosing a repo
+
+Before deciding where this service lives, notice what's actually in it. The PoC's meta-workflow (per `docs/design/plans/system-view-intent-parsing.md`) is already three action pairs:
+
+- **A_intent** ⟨embedding classifier, IntentGuard⟩
+- **A_decompose** ⟨LLM param extraction, schema guard⟩
+- **A_dispatch** ⟨WorkflowEffector, WorkflowStatusGuard⟩
+
+That is a valid atomicguard workflow. Registering a child workflow = adding to Π_task, which `WorkflowEffector` reads. **The orchestration half of "Layer 2" is already expressible in atomicguard's own vocabulary.** The service doesn't need to reimplement it — it runs Π_meta per utterance, same way any other workflow runs.
+
+Strip the meta-workflow out and see what's actually left as service-specific code:
+
+| Capability | Where it lives |
+|---|---|
+| Intent → workflow matching (classifier + guard) | Inside **A_intent** AP |
+| Parameter extraction (LLM + schema validation) | Inside **A_decompose** AP |
+| Dispatch (invoke child workflow) | Inside **A_dispatch** AP via `WorkflowEffector` |
+| MQTT subscribe/publish | **Residual plumbing** |
+| HTTP `/workflows` endpoints | **Residual plumbing** |
+| TTL + heartbeat on registrations | **Residual plumbing** |
+| Classifier index maintenance (centroid rebuild) | **Residual plumbing** |
+| Event loop feeding utterances into meta-workflow runs | **Residual plumbing** |
+
+The residual is **~500 LoC of glue**. Everything else lives inside Π_meta, shipped as a JSON pair in the catalogue — same file format and runtime as any workflow in Π_task.
+
+**Implication for the repo-placement question below:** it isn't "where does the workflow service live" — it's "where do ~500 LoC of MQTT + HTTP + catalogue glue live, given atomicguard does the actual orchestration work?" A much smaller question. Apply this lens first and the answer falls out cleanly.
+
 ## Architecture
 
 ```
@@ -335,18 +362,26 @@ Five options. Ranked roughly by my read; adjust to taste.
 
 ### Recommendation
 
-**v1 in atomicguard (Option A). Extract to a standalone repo (Option E) when the API is stable. Rust port (Option B) when atomicguard-rs is ready.**
+**Option A (inside atomicguard) for v1, combined with the meta-workflow lens from the earlier section. Option E (new repo) later when operational pressure justifies it. Option B (atomicguard-rs) when the Rust port has caught up on runtime primitives.**
 
-Rationale: the fastest path to a running service that replaces the static catalogue is to refactor `mqtt_workflow_service.py` in atomicguard into the four-capability service described here, using the registry and re-indexing classifier. A new repo now doubles the coordination cost without delivering any user-visible value. Once the API endpoints, payload shapes, and MQTT topics are settled (say, after `dev` and monitoring-ops both consume it successfully), extraction to Option E is a mechanical move: copy files, swap imports to the `atomicguard` package, done.
+Concretely, in order:
+
+1. **Apply the meta-workflow lens first.** Ship Π_meta as `workflows/meta/workflow.json` + `workflows/meta/ap_context.json` inside atomicguard's catalogue, same pattern as the sysadmin workflows. The embedding classifier, parameter extractor, and dispatcher become APs — not service code. This is mostly a rearrangement of code that already exists in `examples/sysadmin/`. Π_meta is just another workflow after this.
+2. **Build the residual plumbing as `atomicguard.application.service`** — about 500 LoC covering MQTT bridge, HTTP registry, TTL/heartbeat, classifier index maintenance. Lives inside atomicguard because that matches the current shape: the repo already ships `examples/sysadmin/mqtt_*.py` and `src/atomicguard/web/` (FastAPI dashboard). Option A formalises what's already there.
+3. **Mirror as `ag-service` crate in atomicguard-rs** once the runtime primitives for Π_meta exist (tracked in `thompsonson/atomicguard-rs#1, #2`, plus `CommandTemplateGenerator` and `WorkflowEffector` ports). Natural fit for the existing 7-crate Cargo workspace; same four-capability API, different implementation language.
+4. **Extract to a standalone repo (Option E) when operational concerns justify it** — multi-host deployment, authn/authz, rate limiting, observability features that don't belong in the framework repo. Today that pressure doesn't exist; extracting now doubles coordination cost for zero user-visible gain.
+
+**Why not Option E today** (i.e., "keep atomicguard pure-library"): atomicguard is already not a pure library. It ships `examples/sysadmin/mqtt_workflow_service.py`, `mqtt_intent_listener.py`, and a FastAPI web UI. Committing to Option E now forces either (a) extracting those existing services too — which breaks the PoC's single-install distribution story — or (b) living with the inconsistency of two service repos. The current shape is "framework + reference system"; the workflow service formalises the reference-system role as a first-class subpackage rather than a pile of scripts under `examples/`.
 
 ## Minimum viable build
 
 Order in which to land pieces, each independently reviewable:
 
+0. **Write Π_meta as `workflows/meta/workflow.json` + `ap_context.json`.** Three APs: A_intent (embedding classifier + IntentGuard), A_decompose (LLM param extraction + schema guard), A_dispatch (WorkflowEffector + WorkflowStatusGuard). This is the meta-workflow lens realised as data. Everything from step 1 onward runs this workflow per utterance instead of reimplementing it.
 1. **`POST /workflows` + `GET /workflows` + in-memory registry.** No classifier integration yet; a hand-wired workflow loader so the existing sysadmin catalogue works.
-2. **Classifier re-indexing on register/retire.** Reuse the centroid compute from `examples/sysadmin/intent_embedding.py`.
-3. **`POST /match`.** Voice utterances that hit registered workflows start routing correctly.
-4. **`POST /dispatch` + `POST /run`.** The service can actually invoke workflows.
+2. **Classifier re-indexing on register/retire.** Reuse the centroid compute from `examples/sysadmin/intent_embedding.py`. The re-index updates the A_intent generator's lookup data; Π_meta itself is unchanged.
+3. **`POST /match`.** Shortcut endpoint that runs only A_intent + A_decompose (truncated Π_meta); useful for front-ends that want to preview the route before dispatching.
+4. **`POST /dispatch` + `POST /run`.** `/run` executes the full Π_meta (which dispatches to Π_task via WorkflowEffector); `/dispatch` runs a named Π_task directly.
 5. **MQTT out.** Events + escalations flow on the chops-compatible topics.
 6. **`POST /feedback` + MQTT feedback.** Escalation loop closes.
 7. **TTL + heartbeat + persistence.** Registrations survive service restart.
