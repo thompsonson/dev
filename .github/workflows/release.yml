@@ -1,0 +1,51 @@
+name: release
+
+# Build prebuilt `dev` binaries and attach them to a GitHub Release.
+# Triggered by pushing a version tag, e.g.:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Produces static (musl) Linux binaries that also run under Termux, plus
+# native macOS binaries. Assets are named dev-<target>.tar.gz with a
+# matching .sha256, so scripts/bootstrap.sh can fetch the right one.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  upload:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl   # pop-mini, x86 Linux
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl  # phone/tablet (Termux), ARM Linux
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin         # Intel Mac
+            os: macos-latest
+          - target: aarch64-apple-darwin        # Apple Silicon Mac
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and upload release binary
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: dev
+          target: ${{ matrix.target }}
+          archive: dev-$target
+          checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}

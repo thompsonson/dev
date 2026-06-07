@@ -57,6 +57,40 @@ The client role writes `default_host` to `~/.config/dev/config`, so `dev <projec
 on the laptop or phone targets `pop-mini`. On Termux there is no systemd, so the
 host role is rejected there — a phone is always a client.
 
+### Install from a release (no clone, no cargo)
+
+`scripts/install.sh` builds from source. To skip the toolchain entirely — the
+practical path on a phone — use the bootstrap installer, which downloads a
+prebuilt binary from the latest GitHub Release (CI publishes static musl Linux
+binaries that also run under Termux, plus native macOS binaries):
+
+```bash
+# laptop / pop-mini
+curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | bash
+
+# as a client of pop-mini
+curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_HOST=pop-mini bash
+```
+
+On a **phone/tablet (Termux)**, no chezmoi required:
+
+```bash
+pkg install tmux openssh
+curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_HOST=pop-mini bash
+```
+
+The bootstrap detects OS/arch, verifies the published SHA-256, installs to
+`$PREFIX/bin` on Termux (else `~/.local/bin`), and records `default_host`.
+If the static binary ever fails to run on a given Android, fall back to
+`pkg install rust && cargo install --git https://github.com/thompsonson/dev dev-cli`.
+
+For dotfiles, drop the same one-liner into a chezmoi `run_once_install-dev.sh`
+once chezmoi is set up; until then the curl command is the chezmoi-independent
+method.
+
+Releases are cut by pushing a tag: `git tag v0.1.0 && git push origin v0.1.0`
+triggers `.github/workflows/release.yml`.
+
 The install script is a thin wrapper around `cargo build --release` + `install`. If you'd rather do it by hand:
 
 ```bash
