@@ -42,12 +42,16 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
+            rustflags: "-C link-arg=-static-pie"
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
+            rustflags: "-C link-arg=-static-pie"
           - target: x86_64-apple-darwin
             os: macos-latest
+            rustflags: ""
           - target: aarch64-apple-darwin
             os: macos-latest
+            rustflags: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -73,6 +77,8 @@ jobs:
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
 
       - name: Package and upload
         env:
