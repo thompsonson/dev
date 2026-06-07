@@ -78,7 +78,13 @@ BIN_DIR="$INSTALL_PREFIX/bin"
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
-  Linux) plat="unknown-linux-musl" ;;   # static; also runs under Termux
+  Linux)
+    if is_termux; then
+      plat="linux-android"   # NDK-built binary, works natively on Android/Termux
+    else
+      plat="unknown-linux-musl"
+    fi
+    ;;
   Darwin) plat="apple-darwin" ;;
   *) die "unsupported OS: $os" ;;
 esac
