@@ -33,10 +33,29 @@ If you just want to SSH into a box and `dev my-project` into a session that surv
 ```bash
 git clone git@github.com:thompsonson/dev.git
 cd dev
-scripts/install.sh              # build + install to ~/.local/bin/dev
-scripts/install.sh --systemd    # also install + start a systemd --user service (Linux)
+scripts/install.sh              # build + install to ~/.local/bin/dev (no role)
+scripts/install.sh --host       # daemon host: also install + start the systemd --user service (Linux)
+scripts/install.sh --client HOST# client: install + record default_host=HOST, no daemon
 scripts/install.sh --uninstall  # remove binary (and unit, if present)
 ```
+
+`--systemd` is kept as a deprecated alias for `--host`.
+
+### Roles: one host, many clients
+
+`dev` is a distributed utility. Sessions live on a single always-on **host**;
+your other devices are **clients** that drive it over SSH (Tailscale gives them
+a stable name and reachability). A typical fleet:
+
+| Machine | Command | Result |
+|---|---|---|
+| `pop-mini` (always-on) | `scripts/install.sh --host` | binary + `dev daemon` under systemd --user |
+| laptop | `scripts/install.sh --client pop-mini` | binary + `default_host=pop-mini` |
+| phone (Termux) | `pkg install rust tmux openssh && scripts/install.sh --client pop-mini` | same, no systemd |
+
+The client role writes `default_host` to `~/.config/dev/config`, so `dev <project>`
+on the laptop or phone targets `pop-mini`. On Termux there is no systemd, so the
+host role is rejected there — a phone is always a client.
 
 The install script is a thin wrapper around `cargo build --release` + `install`. If you'd rather do it by hand:
 
