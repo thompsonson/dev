@@ -46,6 +46,9 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             rustflags: "-C link-arg=-static-pie"
+          - target: aarch64-linux-android
+            os: ubuntu-latest
+            rustflags: ""
           - target: x86_64-apple-darwin
             os: macos-latest
             rustflags: ""
@@ -62,9 +65,16 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Setup cross-compilation toolchain
+        if: contains(matrix.target, 'musl')
         uses: taiki-e/setup-cross-toolchain-action@v1
         with:
           target: ${{ matrix.target }}
+
+      - name: Setup Android NDK linker
+        if: contains(matrix.target, 'android')
+        run: |
+          NDK_BIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK_BIN/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
 
       - name: Cache cargo
         uses: actions/cache@v4
