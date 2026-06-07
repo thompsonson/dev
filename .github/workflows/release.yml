@@ -20,7 +20,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+
   upload:
+    needs: create-release
     name: ${{ matrix.target }}
     strategy:
       fail-fast: false
