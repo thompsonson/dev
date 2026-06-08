@@ -137,9 +137,11 @@ sys.exit(1)")" || die "no dev release found"
         VERSION="$(printf '%s' "$raw" | jq -r '[.[]|select(.prerelease)][0].tag_name')"
         [[ "$VERSION" != "null" && -n "$VERSION" ]] || die "no dev release found"
       else
-        VERSION="$(printf '%s' "$raw" \
-          | grep -B2 '"prerelease": true' | grep '"tag_name"' | head -1 \
-          | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+        # Dev tags always contain -dev. in the name — filter tag_name lines by
+        # that pattern. The || true prevents set -e from silently exiting when
+        # grep finds no matches; the empty-VERSION check below surfaces the error.
+        VERSION="$(printf '%s' "$raw" | grep '"tag_name"' | grep -- '-dev\.' \
+          | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || true)"
         [[ -n "$VERSION" ]] || die "no dev release found (install python3 or jq for reliable resolution)"
       fi
       ;;
