@@ -96,17 +96,25 @@ esac
 TRIPLE="${cpu}-${plat}"
 ASSET="dev-${TRIPLE}.tar.gz"
 
+# Resolve "latest" to an actual tag via the API so the download uses a
+# direct versioned URL rather than the releases/latest/download redirect
+# chain, which is prone to 504s on GitHub's CDN.
 if [[ "$VERSION" == "latest" ]]; then
-  BASE="https://github.com/${REPO}/releases/latest/download"
-else
-  BASE="https://github.com/${REPO}/releases/download/${VERSION}"
+  api="https://api.github.com/repos/${REPO}/releases/latest"
+  if command -v curl >/dev/null 2>&1; then
+    VERSION="$(curl -fsSL "$api" | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+  elif command -v wget >/dev/null 2>&1; then
+    VERSION="$(wget -qO- "$api" | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+  fi
+  [[ -n "$VERSION" ]] || die "could not resolve latest release tag from $api"
 fi
+BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 URL="${BASE}/${ASSET}"
 
 # --- download + verify + install --------------------------------------------
 fetch() { # url outfile
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$1" -o "$2"
+    curl -fsSL --retry 3 --retry-delay 2 "$1" -o "$2"
   elif command -v wget >/dev/null 2>&1; then
     wget -qO "$2" "$1"
   else
