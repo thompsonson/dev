@@ -93,7 +93,8 @@ impl DevManager {
                     .projects
                     .get(&p.display_name)
                     .or_else(|| self.config.projects.get(basename))
-                    .and_then(|e| e.host.clone());
+                    .and_then(|e| e.host.clone())
+                    .or_else(|| self.config.default_host.clone());
 
                 projects.push(ProjectInfo {
                     name: p.display_name.clone(),
@@ -184,21 +185,13 @@ impl DevManager {
 
     /// Open a project: resolve, create if needed, return info for CLI to attach.
     pub fn open(&self, query: &str, force_layout: Option<Layout>) -> Result<OpenResult> {
-        // Check for remote forwarding
-        let host = self.config.projects.get(query).and_then(|e| e.host.clone());
-
-        if let Some(ref host) = host {
-            let local_hostname = hostname::get()
-                .ok()
-                .and_then(|h| h.into_string().ok())
-                .unwrap_or_default();
-            if host != &local_hostname {
-                return Ok(OpenResult {
-                    session_name: query.to_string(),
-                    created: false,
-                    remote_host: Some(host.clone()),
-                });
-            }
+        // Check for remote forwarding (per-project host or default_host fallback).
+        if let Some(host) = self.effective_remote_host(query) {
+            return Ok(OpenResult {
+                session_name: query.to_string(),
+                created: false,
+                remote_host: Some(host),
+            });
         }
 
         // Check if session already exists under the query name
@@ -244,25 +237,15 @@ impl DevManager {
             ),
         };
 
-        // Check remote for resolved name too
+        // Check remote for resolved name too (already checked query above;
+        // this handles the case where the resolved basename differs).
         if session_name != query {
-            let host = self
-                .config
-                .projects
-                .get(&session_name)
-                .and_then(|e| e.host.clone());
-            if let Some(ref host) = host {
-                let local_hostname = hostname::get()
-                    .ok()
-                    .and_then(|h| h.into_string().ok())
-                    .unwrap_or_default();
-                if host != &local_hostname {
-                    return Ok(OpenResult {
-                        session_name: session_name.clone(),
-                        created: false,
-                        remote_host: Some(host.clone()),
-                    });
-                }
+            if let Some(host) = self.effective_remote_host(&session_name) {
+                return Ok(OpenResult {
+                    session_name: session_name.clone(),
+                    created: false,
+                    remote_host: Some(host),
+                });
             }
         }
 
@@ -304,11 +287,36 @@ impl DevManager {
     }
 
     /// Get the remote host for a project, if any.
+    /// Falls back to `default_host` when the project has no explicit host.
     pub fn get_host(&self, project: &str) -> Option<String> {
         self.config
             .projects
             .get(project)
             .and_then(|e| e.host.clone())
+            .or_else(|| self.config.default_host.clone())
+    }
+
+    fn local_hostname() -> String {
+        hostname::get()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+            .unwrap_or_default()
+    }
+
+    /// Resolve the effective host for a project name, returning `None` if it
+    /// resolves to the local machine.
+    pub fn effective_remote_host(&self, project: &str) -> Option<String> {
+        let host = self
+            .config
+            .projects
+            .get(project)
+            .and_then(|e| e.host.clone())
+            .or_else(|| self.config.default_host.clone())?;
+        if host == Self::local_hostname() {
+            None
+        } else {
+            Some(host)
+        }
     }
 
     /// Get the list of discovered projects (for CLI picker).

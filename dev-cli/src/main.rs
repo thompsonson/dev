@@ -169,8 +169,7 @@ fn cmd_list() -> Result<()> {
 fn cmd_start(project: &str, layout: Option<Layout>) -> Result<()> {
     let mgr = DevManager::new()?;
 
-    // Check remote forwarding
-    if let Some(host) = mgr.get_host(project) {
+    if let Some(host) = mgr.effective_remote_host(project) {
         forward_remote(&host, &["start", project]);
     }
 
@@ -216,8 +215,7 @@ fn cmd_detach() -> Result<()> {
 fn cmd_kill(name: &str) -> Result<()> {
     let mgr = DevManager::new()?;
 
-    // Check remote forwarding
-    if let Some(host) = mgr.get_host(name) {
+    if let Some(host) = mgr.effective_remote_host(name) {
         forward_remote(&host, &["kill", name]);
     }
 
