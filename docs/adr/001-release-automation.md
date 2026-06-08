@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — pending validation that release-please behaviour aligns with project CI/CD goals (see open thread on PR #36)
+Accepted
 
 ## Context
 
@@ -13,30 +13,36 @@ The project produces a CLI binary (`dev`) distributed as prebuilt binaries via G
 - A stable release tag that triggers the binary build workflow
 - A separate dev channel for pre-release builds
 
-The project uses squash-merge only on `main`, so every merged PR produces exactly one commit. All PR titles must follow Conventional Commits — this is the input release-please uses to determine version bumps and changelog entries.
+The project uses squash-merge only on `main`, so every merged PR produces exactly one commit on `main`. All PR titles must follow Conventional Commits — this is the input release-please uses to determine version bumps and changelog entries.
+
+Because the repo requires PRs for all commits to `main`, the Release PR is a structural necessity: release-please must bump `Cargo.toml` and `CHANGELOG.md`, and those file changes must land via a PR. This is not a process choice — it is a constraint of the branch protection model.
 
 ## Decision
 
-Use **release-please** (`googleapis/release-please-action@v4`) for stable release automation.
+Use **release-please** (`googleapis/release-please-action@v4`) for stable release automation, triggered **manually** via `just release-stable` rather than automatically on every push to `main`.
+
+### Why manual trigger
+
+release-please's default model triggers on every push to `main`, opening or updating a Release PR whenever a `feat:` or `fix:` PR lands. This produces constant Release PR noise and ties the stable release cadence to the development merge cadence.
+
+The project goal is: merge to `main` freely, ship dev builds continuously, cut stable releases as a deliberate explicit act. Changing the workflow trigger to `workflow_dispatch` only — and exposing it as `just release-stable` — achieves this without changing any release-please internals.
 
 ### Release PR lifecycle
 
-Since the repo uses squash-merge only, one merged PR = one commit on `main`. release-please maintains **one** Release PR at a time, accumulating all releasable PRs merged since the last stable release:
+Since the repo uses squash-merge only, one merged PR = one commit on `main`. release-please maintains **one** Release PR at a time, accumulating all releasable PRs since the last stable release:
 
-| Merged PR type | Effect on Release PR |
+| Merged PR type | Effect |
 |---|---|
-| `feat:` or `fix:` | Opens the Release PR if none exists; otherwise updates the existing one |
-| `chore:`, `refactor:`, `docs:`, `test:` | No effect — Release PR unchanged |
+| `feat:` or `fix:` | Included in the next Release PR when `just release-stable` is run |
+| `chore:`, `refactor:`, `docs:`, `test:` | Never included — not releasable units |
 
-A stable release may include many merged PRs. The Release PR stays open, accumulating changes, until you deliberately merge it. Until then `main` keeps moving and the dev channel picks up changes via manual tagging — no stable release is created.
-
-See the [release-please FAQ](https://github.com/googleapis/release-please#release-please-bot-does-not-create-a-release-pr-why) for root causes when no PR appears.
+A stable release may include many merged PRs. No Release PR is opened automatically — it only appears when `just release-stable` is explicitly run. Until then `main` keeps moving and the dev channel picks up changes via `just tag-dev`.
 
 ### Configuration constraints
 
-**release-please's Rust plugin requires explicit `version = "x.y.z"` in `[package]`.** It does not support Cargo workspace version inheritance (`version.workspace = true`). Sub-crates must carry explicit versions.
+**release-please's Rust plugin requires explicit `version = "x.y.z"` in `[package]`.** Cargo workspace version inheritance (`version.workspace = true`) is not supported. Sub-crates must carry explicit versions.
 
-The package path in `release-please-config.json` and `.release-please-manifest.json` is `"dev-cli"` — the binary crate. `dev-lib/Cargo.toml` is updated on each release via `extra-files` jsonpath `$.package.version`.
+The package path in `release-please-config.json` and `.release-please-manifest.json` is `"dev-cli"`. `dev-lib/Cargo.toml` is updated on each release via `extra-files` jsonpath `$.package.version`.
 
 ### Release channels
 
@@ -52,32 +58,28 @@ The package path in `release-please-config.json` and `.release-please-manifest.j
 ```mermaid
 sequenceDiagram
     actor Dev
-    participant PR as Feature PR
-    participant main as main branch
-    participant RP as release-please workflow
+    participant J as just release-stable
+    participant RP as release-please workflow<br/>(workflow_dispatch)
     participant RPR as Release PR
+    participant main as main branch
     participant tag as vX.Y.Z tag
     participant RW as release workflow
     participant GHR as GitHub Release
 
-    Dev->>PR: merge (squash, conventional title)
-    PR->>main: one commit lands
-    main->>RP: triggers release-please.yml
+    Note over Dev,GHR: Triggered explicitly — no automatic CI involvement
 
-    alt feat: or fix: commit present
-        RP->>RPR: open/update Release PR
-        Note over RPR: bumps dev-cli/Cargo.toml<br/>bumps dev-lib/Cargo.toml<br/>prepends CHANGELOG.md<br/>updates .release-please-manifest.json
-        Dev->>RPR: review and merge
-        RPR->>main: merge commit lands
-        RPR->>tag: release-please creates vX.Y.Z tag
-        tag->>RW: triggers release.yml
-        RW->>GHR: create draft release
-        RW->>GHR: build + upload 5 binaries (parallel)
-        Note over RW,GHR: x86_64-linux-musl<br/>aarch64-linux-musl<br/>aarch64-linux-android<br/>x86_64-apple-darwin<br/>aarch64-apple-darwin
-        RW->>GHR: publish release (Latest)
-    else chore:/docs:/refactor: only
-        RP-->>RPR: no PR opened (nothing to release)
-    end
+    Dev->>J: just release-stable
+    J->>RP: gh workflow run release-please.yml
+    RP->>RPR: open Release PR
+    Note over RPR: bumps dev-cli/Cargo.toml<br/>bumps dev-lib/Cargo.toml<br/>prepends CHANGELOG.md<br/>updates .release-please-manifest.json<br/>accumulates all feat:/fix: PRs since last tag
+    Dev->>RPR: review and merge
+    RPR->>main: merge commit lands
+    RPR->>tag: release-please creates vX.Y.Z tag
+    tag->>RW: triggers release.yml
+    RW->>GHR: create draft release
+    RW->>GHR: build + upload 5 binaries (parallel)
+    Note over RW,GHR: x86_64-linux-musl<br/>aarch64-linux-musl<br/>aarch64-linux-android<br/>x86_64-apple-darwin<br/>aarch64-apple-darwin
+    RW->>GHR: publish release (Latest)
 ```
 
 ## Dev release flow
@@ -85,13 +87,15 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     actor Dev
-    participant main as main branch
+    participant J as just tag-dev
     participant tag as vX.Y.Z-dev.DATE.HASH tag
     participant RW as release workflow
     participant GHR as GitHub Release
 
-    Dev->>main: git tag vX.Y.Z-dev.YYYYMMDD.HASH
-    Dev->>tag: git push origin <tag>
+    Note over Dev,GHR: Triggered explicitly at any time — no Release PR involved
+
+    Dev->>J: just tag-dev
+    J->>tag: create + push vX.Y.Z-dev.YYYYMMDD.HASH
     tag->>RW: triggers release.yml
     RW->>GHR: create draft pre-release
     Note over RW,GHR: detects -dev. in tag name<br/>passes --prerelease flag
@@ -122,13 +126,20 @@ curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootst
 
 ## Alternatives considered
 
-**Cargo-release** — automates version bumping and tagging but does not generate changelogs or open PRs. Requires manual invocation; less integrated with GitHub.
+**Automatic push-to-main trigger** — release-please's default. Opens a Release PR on every `feat:`/`fix:` merge. Rejected: ties stable release cadence to development cadence, produces constant Release PR noise, and gives no explicit stable release gate.
 
-**Manual tagging with manual version bumps** — no tooling overhead but relies on discipline. Rejected because the release PR step enforces a review gate before a stable tag is created.
+**`skip-github-pull-request: true`** — suppresses the Release PR and fires a tag/release automatically on every releasable commit. Rejected: fully automatic stable releases with no human gate.
+
+**Knope** — supports `workflow_dispatch` releases with no PR at all. Not adopted: less mature, requires additional tooling.
+
+**Cargo-release** — handles version bumping and tagging but does not generate changelogs. Rejected: no CHANGELOG automation.
+
+**Manual tagging with manual version bumps** — no tooling, relies entirely on discipline. Rejected: no CHANGELOG and no version consistency enforcement.
 
 ## Consequences
 
+- `just release-stable` is the only trigger for a stable release. No automation opens a Release PR without it.
 - All PR titles must be valid Conventional Commits — enforced by squash-merge policy.
 - `dev-cli/Cargo.toml` and `dev-lib/Cargo.toml` versions are managed by release-please on stable cuts; do not edit them manually.
-- `.release-please-manifest.json` records the last released version under key `"dev-cli"`. If it drifts from `dev-cli/Cargo.toml`, reset it manually and commit to `main`.
+- `.release-please-manifest.json` records the last released version under key `"dev-cli"`. If it drifts, reset it to match `dev-cli/Cargo.toml` and commit to `main`.
 - Workspace version inheritance (`version.workspace = true`) must not be used — it breaks the release-please Rust plugin.
