@@ -305,7 +305,7 @@ impl DevManager {
 
     /// Resolve the effective host for a project name, returning `None` if it
     /// resolves to the local machine.
-    fn effective_remote_host(&self, project: &str) -> Option<String> {
+    pub fn effective_remote_host(&self, project: &str) -> Option<String> {
         let host = self
             .config
             .projects
