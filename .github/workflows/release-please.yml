@@ -1,14 +1,22 @@
 name: release-please
 
-# Opens a Release PR accumulating all feat:/fix: commits since the last
-# stable release. Triggered manually via `just release-stable` — never
-# automatically. Merging the Release PR creates the vX.Y.Z tag, which
-# triggers release.yml to build and publish binaries.
+# Two triggers, two responsibilities:
+#
+#   workflow_dispatch — invoked by `just release-stable` to open the
+#     Release PR. This is the developer's explicit decision to cut a
+#     stable release.
+#
+#   push: branches: main — detects when the Release PR has been merged
+#     and creates the vX.Y.Z tag, which triggers release.yml to build
+#     and publish binaries. Does NOT open new PRs on regular merges.
 #
 # See docs/adr/001-release-automation.md for the decision record.
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: write
