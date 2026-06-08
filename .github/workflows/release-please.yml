@@ -1,14 +1,14 @@
 name: release-please
 
-# Opens and maintains a "Release PR" after each merge to main.
-# The PR bumps Cargo.toml version and generates CHANGELOG.md from
-# conventional commit messages. Merging the Release PR tags the commit
-# (e.g. v0.1.0) and triggers the existing release.yml build workflow.
+# Opens a Release PR accumulating all feat:/fix: commits since the last
+# stable release. Triggered manually via `just release-stable` — never
+# automatically. Merging the Release PR creates the vX.Y.Z tag, which
+# triggers release.yml to build and publish binaries.
+#
+# See docs/adr/001-release-automation.md for the decision record.
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
