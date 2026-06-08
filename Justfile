@@ -2,7 +2,7 @@
 # Install just: https://github.com/casey/just
 
 # Tag and push a dev pre-release build
-tag-dev:
+release-dev:
     #!/usr/bin/env bash
     set -euo pipefail
     tag="v$(grep '^version' dev-cli/Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')-dev.$(date +%Y%m%d).$(git rev-parse --short HEAD)"

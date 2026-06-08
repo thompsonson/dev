@@ -70,10 +70,10 @@ If `.release-please-manifest.json` drifts from `dev-cli/Cargo.toml`, set `"dev-c
 
 ## Dev releases — manual
 
-Dev releases are tagged manually to test in-progress work without cutting a stable release. Use `just tag-dev` (see [Justfile](../Justfile)):
+Dev releases are tagged manually to test in-progress work without cutting a stable release. Use `just release-dev` (see [Justfile](../Justfile)):
 
 ```bash
-just tag-dev
+just release-dev
 ```
 
 Or manually:

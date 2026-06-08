@@ -36,7 +36,7 @@ Since the repo uses squash-merge only, one merged PR = one commit on `main`. rel
 | `feat:` or `fix:` | Included in the next Release PR when `just release-stable` is run |
 | `chore:`, `refactor:`, `docs:`, `test:` | Never included — not releasable units |
 
-A stable release may include many merged PRs. No Release PR is opened automatically — it only appears when `just release-stable` is explicitly run. Until then `main` keeps moving and the dev channel picks up changes via `just tag-dev`.
+A stable release may include many merged PRs. No Release PR is opened automatically — it only appears when `just release-stable` is explicitly run. Until then `main` keeps moving and the dev channel picks up changes via `just release-dev`.
 
 ### Configuration constraints
 
@@ -87,14 +87,14 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     actor Dev
-    participant J as just tag-dev
+    participant J as just release-dev
     participant tag as vX.Y.Z-dev.DATE.HASH tag
     participant RW as release workflow
     participant GHR as GitHub Release
 
     Note over Dev,GHR: Triggered explicitly at any time — no Release PR involved
 
-    Dev->>J: just tag-dev
+    Dev->>J: just release-dev
     J->>tag: create + push vX.Y.Z-dev.YYYYMMDD.HASH
     tag->>RW: triggers release.yml
     RW->>GHR: create draft pre-release
