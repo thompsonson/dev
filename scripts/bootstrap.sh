@@ -5,14 +5,16 @@
 #
 # Quick start:
 #   curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | bash
-#   curl -fsSL .../bootstrap.sh | DEV_HOST=pop-mini bash       # install as a client of pop-mini
+#   curl -fsSL .../bootstrap.sh | DEV_HOST=pop-mini bash          # install as a client of pop-mini
+#   curl -fsSL .../bootstrap.sh | DEV_CHANNEL=dev bash            # install latest dev build
 #
 # Or, run as a file with flags:
 #   bootstrap.sh --client pop-mini
 #   bootstrap.sh --host
+#   bootstrap.sh --channel dev
 #   bootstrap.sh --version v0.1.0 --prefix ~/.local
 #
-# Env vars (flags override): DEV_HOST, DEV_ROLE, DEV_VERSION, DEV_PREFIX
+# Env vars (flags override): DEV_HOST, DEV_ROLE, DEV_VERSION, DEV_CHANNEL, DEV_PREFIX
 # Setting DEV_HOST implies the client role.
 
 set -euo pipefail
@@ -21,6 +23,7 @@ REPO="thompsonson/dev"
 ROLE="${DEV_ROLE:-}"
 CLIENT_HOST="${DEV_HOST:-}"
 VERSION="${DEV_VERSION:-latest}"
+CHANNEL="${DEV_CHANNEL:-stable}"
 INSTALL_PREFIX="${DEV_PREFIX:-}"
 
 [[ -n "$CLIENT_HOST" && -z "$ROLE" ]] && ROLE="client"
@@ -31,11 +34,12 @@ bootstrap.sh — download + install a prebuilt `dev` binary
 
   --host           install + enable the systemd --user daemon (Linux host)
   --client HOST    install + record default_host=HOST (laptop/phone)
-  --version V      release tag to install (default: latest)
+  --channel CH     release channel: stable (default) or dev
+  --version V      release tag to install (default: latest for channel)
   --prefix DIR     install prefix (default: Termux $PREFIX, else ~/.local)
   -h, --help       this help
 
-Env: DEV_HOST, DEV_ROLE, DEV_VERSION, DEV_PREFIX
+Env: DEV_HOST, DEV_ROLE, DEV_CHANNEL, DEV_VERSION, DEV_PREFIX
 EOF
 }
 
@@ -44,6 +48,8 @@ while [[ $# -gt 0 ]]; do
     --host) ROLE="host"; shift;;
     --client) ROLE="client"; CLIENT_HOST="${2:-}"; [[ -n "$CLIENT_HOST" ]] || { echo "--client needs HOST" >&2; exit 1; }; shift 2;;
     --client=*) ROLE="client"; CLIENT_HOST="${1#--client=}"; shift;;
+    --channel) CHANNEL="${2:?}"; shift 2;;
+    --channel=*) CHANNEL="${1#--channel=}"; shift;;
     --version) VERSION="${2:?}"; shift 2;;
     --version=*) VERSION="${1#--version=}"; shift;;
     --prefix) INSTALL_PREFIX="${2:?}"; shift 2;;
@@ -96,17 +102,49 @@ esac
 TRIPLE="${cpu}-${plat}"
 ASSET="dev-${TRIPLE}.tar.gz"
 
-# Resolve "latest" to an actual tag via the API so the download uses a
-# direct versioned URL rather than the releases/latest/download redirect
-# chain, which is prone to 504s on GitHub's CDN.
-if [[ "$VERSION" == "latest" ]]; then
-  api="https://api.github.com/repos/${REPO}/releases/latest"
+# Resolve version. Always use a specific tag so the download hits the
+# versioned URL directly — the releases/latest/download redirect is prone
+# to 504s on GitHub's CDN.
+api_fetch() { # url → stdout
   if command -v curl >/dev/null 2>&1; then
-    VERSION="$(curl -fsSL "$api" | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+    curl -fsSL "$1"
   elif command -v wget >/dev/null 2>&1; then
-    VERSION="$(wget -qO- "$api" | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+    wget -qO- "$1"
+  else
+    die "need curl or wget"
   fi
-  [[ -n "$VERSION" ]] || die "could not resolve latest release tag from $api"
+}
+
+if [[ "$VERSION" == "latest" ]]; then
+  case "$CHANNEL" in
+    stable)
+      VERSION="$(api_fetch "https://api.github.com/repos/${REPO}/releases/latest" \
+        | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+      [[ -n "$VERSION" ]] || die "could not resolve latest stable release tag"
+      ;;
+    dev)
+      # Pick the newest pre-release. Requires python3 or jq for reliable JSON
+      # parsing; falls back to grep (may break if GitHub changes field ordering).
+      raw="$(api_fetch "https://api.github.com/repos/${REPO}/releases")"
+      if command -v python3 >/dev/null 2>&1; then
+        VERSION="$(printf '%s' "$raw" | python3 -c "
+import sys, json
+for r in json.load(sys.stdin):
+    if r.get('prerelease'):
+        print(r['tag_name']); sys.exit(0)
+sys.exit(1)")" || die "no dev release found"
+      elif command -v jq >/dev/null 2>&1; then
+        VERSION="$(printf '%s' "$raw" | jq -r '[.[]|select(.prerelease)][0].tag_name')"
+        [[ "$VERSION" != "null" && -n "$VERSION" ]] || die "no dev release found"
+      else
+        VERSION="$(printf '%s' "$raw" \
+          | grep -B2 '"prerelease": true' | grep '"tag_name"' | head -1 \
+          | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+        [[ -n "$VERSION" ]] || die "no dev release found (install python3 or jq for reliable resolution)"
+      fi
+      ;;
+    *) die "unknown channel: $CHANNEL (use stable or dev)";;
+  esac
 fi
 BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 URL="${BASE}/${ASSET}"

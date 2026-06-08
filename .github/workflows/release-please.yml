@@ -1,0 +1,24 @@
+name: release-please
+
+# Opens and maintains a "Release PR" after each merge to main.
+# The PR bumps Cargo.toml version and generates CHANGELOG.md from
+# conventional commit messages. Merging the Release PR tags the commit
+# (e.g. v0.1.0) and triggers the existing release.yml build workflow.
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
