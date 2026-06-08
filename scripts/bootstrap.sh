@@ -137,11 +137,15 @@ sys.exit(1)")" || die "no dev release found"
         VERSION="$(printf '%s' "$raw" | jq -r '[.[]|select(.prerelease)][0].tag_name')"
         [[ "$VERSION" != "null" && -n "$VERSION" ]] || die "no dev release found"
       else
-        # Dev tags always contain -dev. in the name — filter tag_name lines by
-        # that pattern. The || true prevents set -e from silently exiting when
-        # grep finds no matches; the empty-VERSION check below surfaces the error.
-        VERSION="$(printf '%s' "$raw" | grep '"tag_name"' | grep -- '-dev\.' \
-          | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || true)"
+        # Use awk to find the first release where prerelease is true and return
+        # its tag_name. awk is universally available (including Termux) and
+        # correctly checks the prerelease flag rather than just the tag name,
+        # avoiding mislabelled releases. || true prevents set -e from silently
+        # exiting when no pre-release exists.
+        VERSION="$(printf '%s' "$raw" | awk '
+          /"tag_name"/ { gsub(/.*"tag_name": *"/,""); gsub(/".*$/,""); tag=$0 }
+          /"prerelease": *true/ { if (tag) { print tag; exit } }
+        ' || true)"
         [[ -n "$VERSION" ]] || die "no dev release found (install python3 or jq for reliable resolution)"
       fi
       ;;
