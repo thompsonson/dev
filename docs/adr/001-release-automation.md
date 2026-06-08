@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted — approved by @thompsonson in [PR #36](https://github.com/thompsonson/dev/pull/36#discussion_r3373912884)
 
 ## Context
 
