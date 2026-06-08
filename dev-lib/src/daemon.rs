@@ -302,6 +302,12 @@ fn handle_pane_content(
 #[derive(Deserialize)]
 struct KeysBody {
     keys: String,
+    #[serde(default = "default_true")]
+    enter: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn handle_send_keys(
@@ -312,7 +318,7 @@ fn handle_send_keys(
 ) -> Result<(u16, Value)> {
     let b: KeysBody = serde_json::from_slice(body).context("parse keys body")?;
     let target = format!("{name}:{pane}");
-    state.tmux.send_keys(&target, &b.keys)?;
+    state.tmux.send_keys(&target, &b.keys, b.enter)?;
     Ok((202, json!({"sent": b.keys.len()})))
 }
 
