@@ -37,7 +37,10 @@ pub trait TmuxBackend {
     fn create_session(&self, name: &str, path: &Path, layout: &Layout) -> Result<()>;
     fn kill_session(&self, name: &str) -> Result<()>;
     fn kill_server(&self) -> Result<()>;
-    fn send_keys(&self, target: &str, keys: &str) -> Result<()>;
+    /// Send keys to a pane. When `enter` is true, an Enter keystroke is
+    /// appended — suitable for running a command. When false, the keys are
+    /// sent verbatim — suitable for special keys or partial input.
+    fn send_keys(&self, target: &str, keys: &str, enter: bool) -> Result<()>;
     fn split_window_horizontal(&self, session: &str, path: &Path) -> Result<()>;
     fn select_pane(&self, target: &str) -> Result<()>;
     fn session_count(&self) -> Result<usize>;
@@ -195,13 +198,14 @@ impl TmuxBackend for RealTmux {
         Ok(())
     }
 
-    fn send_keys(&self, target: &str, keys: &str) -> Result<()> {
-        Self::run_one(
-            SendKeys::new()
-                .target_pane(target.to_string())
-                .key(keys.to_string())
-                .key("Enter"),
-        )?;
+    fn send_keys(&self, target: &str, keys: &str, enter: bool) -> Result<()> {
+        let mut cmd = SendKeys::new()
+            .target_pane(target.to_string())
+            .key(keys.to_string());
+        if enter {
+            cmd = cmd.key("Enter");
+        }
+        Self::run_one(cmd)?;
         Ok(())
     }
 
@@ -475,7 +479,7 @@ pub mod mock {
             Ok(())
         }
 
-        fn send_keys(&self, _target: &str, _keys: &str) -> Result<()> {
+        fn send_keys(&self, _target: &str, _keys: &str, _enter: bool) -> Result<()> {
             Ok(())
         }
 

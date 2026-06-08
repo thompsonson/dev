@@ -3,7 +3,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-use dev_lib::api::DevManager;
+use dev_lib::api::{DevManager, Target};
 use dev_lib::config::Layout;
 
 // ANSI colors (only when stdout is a tty)
@@ -168,11 +168,9 @@ fn cmd_list() -> Result<()> {
 
 fn cmd_start(project: &str, layout: Option<Layout>) -> Result<()> {
     let mgr = DevManager::new()?;
-
-    if let Some(host) = mgr.effective_remote_host(project) {
-        forward_remote(&host, &["start", project]);
+    if let Target::Remote(host) = mgr.resolve_target(project) {
+        return forward_remote(&host, &["start", project]);
     }
-
     let session_name = mgr.start(project, layout)?;
     info(&format!("Session '{}' ready", session_name));
     Ok(())
@@ -190,7 +188,7 @@ fn cmd_open(query: &str, force_layout: Option<Layout>) -> Result<()> {
     let result = mgr.open(query, force_layout)?;
 
     if let Some(host) = result.remote_host {
-        forward_remote(&host, &[query]);
+        return forward_remote(&host, &[query]);
     }
 
     if result.created {
@@ -214,11 +212,9 @@ fn cmd_detach() -> Result<()> {
 
 fn cmd_kill(name: &str) -> Result<()> {
     let mgr = DevManager::new()?;
-
-    if let Some(host) = mgr.effective_remote_host(name) {
-        forward_remote(&host, &["kill", name]);
+    if let Target::Remote(host) = mgr.resolve_target(name) {
+        return forward_remote(&host, &["kill", name]);
     }
-
     mgr.stop(name)?;
     info(&format!("Session '{}' killed", name));
     Ok(())
@@ -492,21 +488,10 @@ fn attach(session: &str) -> Result<()> {
     Ok(())
 }
 
-fn forward_remote(host: &str, args: &[&str]) -> ! {
-    let local_hostname = hostname::get()
-        .ok()
-        .and_then(|h| h.into_string().ok())
-        .unwrap_or_default();
-
-    // Only forward if we're not already on the target host
-    if local_hostname == host {
-        // We ARE the target host, don't forward
-        // This is a normal return but we call this in contexts where we'd continue
-        // So actually, let the caller handle this
-        eprintln!("Already on target host");
-        std::process::exit(1);
-    }
-
+/// Forward a command to a remote host via SSH, replacing the current process.
+/// On Unix this never returns on success (`exec`). On non-Unix or on SSH
+/// failure it returns an `Err` which the caller propagates normally.
+fn forward_remote(host: &str, args: &[&str]) -> Result<()> {
     let dev_args = args.join(" ");
     let remote_cmd = format!("dev {dev_args}");
 
@@ -514,14 +499,10 @@ fn forward_remote(host: &str, args: &[&str]) -> ! {
     {
         use std::os::unix::process::CommandExt;
         let err = Command::new("ssh").args(["-t", host, &remote_cmd]).exec();
-        eprintln!("Failed to SSH to {}: {}", host, err);
-        std::process::exit(1);
+        bail!("ssh to {host}: {err}");
     }
     #[cfg(not(unix))]
-    {
-        eprintln!("Remote forwarding not supported on this platform");
-        std::process::exit(1);
-    }
+    bail!("remote forwarding is not supported on this platform");
 }
 
 fn cmd_daemon() -> Result<()> {
