@@ -41,6 +41,10 @@ pub struct ProjectEntry {
 #[derive(Debug, Clone)]
 pub struct DevConfig {
     pub default_layout: Layout,
+    /// Host to forward to when no per-project host is set. Written by
+    /// `bootstrap.sh --client HOST`; used so bare `dev` on a thin client
+    /// transparently attaches to sessions on the always-on host.
+    pub default_host: Option<String>,
     pub projects: HashMap<String, ProjectEntry>,
 }
 
@@ -48,6 +52,7 @@ impl Default for DevConfig {
     fn default() -> Self {
         Self {
             default_layout: Layout::Default,
+            default_host: None,
             projects: HashMap::new(),
         }
     }
@@ -81,6 +86,10 @@ pub fn parse_config_str(content: &str, home: &Path) -> DevConfig {
 
         if key == "default_layout" {
             config.default_layout = Layout::parse(value);
+            continue;
+        }
+        if key == "default_host" {
+            config.default_host = Some(value.to_string());
             continue;
         }
 
@@ -152,6 +161,21 @@ mod tests {
     fn default_layout() {
         let config = parse_config_str("default_layout=claude", &home());
         assert_eq!(config.default_layout, Layout::Claude);
+    }
+
+    #[test]
+    fn default_host() {
+        let config = parse_config_str("default_host=pop-mini", &home());
+        assert_eq!(config.default_host.as_deref(), Some("pop-mini"));
+    }
+
+    #[test]
+    fn default_host_with_other_keys() {
+        let input = "default_layout=claude\ndefault_host=pop-mini\nmyproject=default\n";
+        let config = parse_config_str(input, &home());
+        assert_eq!(config.default_host.as_deref(), Some("pop-mini"));
+        assert_eq!(config.default_layout, Layout::Claude);
+        assert!(config.projects.contains_key("myproject"));
     }
 
     #[test]
