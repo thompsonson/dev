@@ -1,11 +1,19 @@
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 
 use crate::config::{self, DevConfig, Layout};
 use crate::discovery::{self, DiscoveredProject};
+use crate::error::DevError;
 use crate::resolve;
 use crate::tmux::{RealTmux, SessionInfo, TmuxBackend};
+
+/// Where a project's session runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Local,
+    Remote(String),
+}
 
 /// JSON-serializable output for the `list` command.
 #[derive(Debug, serde::Serialize)]
@@ -39,6 +47,7 @@ pub struct DevManager {
     projects: Vec<DiscoveredProject>,
     projects_dir: PathBuf,
     tmux: Box<dyn TmuxBackend>,
+    local_hostname: String,
 }
 
 impl DevManager {
@@ -54,11 +63,16 @@ impl DevManager {
             .map(|h| h.join("Projects"))
             .unwrap_or_default();
         let projects = discovery::discover_projects(&projects_dir, &config);
+        let local_hostname = hostname::get()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+            .unwrap_or_default();
         Ok(Self {
             config,
             projects,
             projects_dir,
             tmux,
+            local_hostname,
         })
     }
 
@@ -88,13 +102,10 @@ impl DevManager {
                     .map(|e| e.layout.to_string())
                     .unwrap_or_else(|| self.config.default_layout.to_string());
 
-                let host = self
-                    .config
-                    .projects
-                    .get(&p.display_name)
-                    .or_else(|| self.config.projects.get(basename))
-                    .and_then(|e| e.host.clone())
-                    .or_else(|| self.config.default_host.clone());
+                let host = match self.resolve_target(&p.display_name) {
+                    Target::Remote(h) => Some(h),
+                    Target::Local => None,
+                };
 
                 projects.push(ProjectInfo {
                     name: p.display_name.clone(),
@@ -105,15 +116,10 @@ impl DevManager {
             }
         }
 
-        // Add config-only remote projects not found locally and without sessions
-        let local_hostname = hostname::get()
-            .ok()
-            .and_then(|h| h.into_string().ok())
-            .unwrap_or_default();
-
+        // Add config-only remote projects not found locally and without sessions.
         for (key, entry) in &self.config.projects {
             if let Some(ref host) = entry.host {
-                if host != &local_hostname
+                if host != &self.local_hostname
                     && !session_names.contains(&key.as_str())
                     && !projects.iter().any(|p| p.name == *key)
                 {
@@ -149,11 +155,7 @@ impl DevManager {
                     .to_string();
                 (basename, p.full_path.clone())
             }
-            None => bail!(
-                "Project '{}' not found in {}",
-                project,
-                self.projects_dir.display()
-            ),
+            None => return Err(DevError::ProjectNotFound(project.to_string()).into()),
         };
 
         // Check if session exists under resolved name
@@ -186,7 +188,7 @@ impl DevManager {
     /// Open a project: resolve, create if needed, return info for CLI to attach.
     pub fn open(&self, query: &str, force_layout: Option<Layout>) -> Result<OpenResult> {
         // Check for remote forwarding (per-project host or default_host fallback).
-        if let Some(host) = self.effective_remote_host(query) {
+        if let Target::Remote(host) = self.resolve_target(query) {
             return Ok(OpenResult {
                 session_name: query.to_string(),
                 created: false,
@@ -230,17 +232,13 @@ impl DevManager {
                 };
                 (name, p.full_path.clone())
             }
-            None => bail!(
-                "Project '{}' not found in {}",
-                query,
-                self.projects_dir.display()
-            ),
+            None => return Err(DevError::ProjectNotFound(query.to_string()).into()),
         };
 
         // Check remote for resolved name too (already checked query above;
         // this handles the case where the resolved basename differs).
         if session_name != query {
-            if let Some(host) = self.effective_remote_host(&session_name) {
+            if let Target::Remote(host) = self.resolve_target(&session_name) {
                 return Ok(OpenResult {
                     session_name: session_name.clone(),
                     created: false,
@@ -286,36 +284,19 @@ impl DevManager {
         Ok(count)
     }
 
-    /// Get the remote host for a project, if any.
-    /// Falls back to `default_host` when the project has no explicit host.
-    pub fn get_host(&self, project: &str) -> Option<String> {
-        self.config
-            .projects
-            .get(project)
-            .and_then(|e| e.host.clone())
-            .or_else(|| self.config.default_host.clone())
-    }
-
-    fn local_hostname() -> String {
-        hostname::get()
-            .ok()
-            .and_then(|h| h.into_string().ok())
-            .unwrap_or_default()
-    }
-
-    /// Resolve the effective host for a project name, returning `None` if it
-    /// resolves to the local machine.
-    pub fn effective_remote_host(&self, project: &str) -> Option<String> {
+    /// Resolve where a project's session runs: locally or on a remote host.
+    /// Per-project `@host` takes precedence over `default_host`. Returns
+    /// `Target::Local` when the resolved host matches the local machine.
+    pub fn resolve_target(&self, project: &str) -> Target {
         let host = self
             .config
             .projects
             .get(project)
             .and_then(|e| e.host.clone())
-            .or_else(|| self.config.default_host.clone())?;
-        if host == Self::local_hostname() {
-            None
-        } else {
-            Some(host)
+            .or_else(|| self.config.default_host.clone());
+        match host {
+            Some(h) if h != self.local_hostname => Target::Remote(h),
+            _ => Target::Local,
         }
     }
 
@@ -348,6 +329,7 @@ mod tests {
             projects: Vec::new(),
             projects_dir: PathBuf::from("/tmp/nonexistent"),
             tmux: Box::new(mock),
+            local_hostname: String::new(),
         };
         // Should not error
         mgr.stop("nonexistent").unwrap();
@@ -367,6 +349,7 @@ mod tests {
             projects: Vec::new(),
             projects_dir: PathBuf::from("/tmp/nonexistent"),
             tmux: Box::new(mock),
+            local_hostname: String::new(),
         };
         mgr.stop("myproject").unwrap();
     }
@@ -385,6 +368,7 @@ mod tests {
             projects: Vec::new(),
             projects_dir: PathBuf::from("/tmp/nonexistent"),
             tmux: Box::new(mock),
+            local_hostname: String::new(),
         };
         let output = mgr.list().unwrap();
         assert_eq!(output.sessions.len(), 1);
@@ -399,7 +383,90 @@ mod tests {
             projects: Vec::new(),
             projects_dir: PathBuf::from("/tmp/nonexistent"),
             tmux: Box::new(mock),
+            local_hostname: String::new(),
         };
         assert_eq!(mgr.kill_all().unwrap(), 0);
+    }
+
+    #[test]
+    fn resolve_target_explicit_host_is_remote() {
+        use crate::config::{DevConfig, Layout, ProjectEntry};
+        let mut config = DevConfig::default();
+        config.projects.insert(
+            "myproject".to_string(),
+            ProjectEntry {
+                layout: Layout::Default,
+                custom_path: None,
+                host: Some("remotehost".to_string()),
+            },
+        );
+        let mgr = DevManager {
+            config,
+            projects: Vec::new(),
+            projects_dir: PathBuf::from("/tmp"),
+            tmux: Box::new(MockTmux::new()),
+            local_hostname: "localhost".to_string(),
+        };
+        assert_eq!(
+            mgr.resolve_target("myproject"),
+            Target::Remote("remotehost".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_target_local_host_is_local() {
+        use crate::config::{DevConfig, Layout, ProjectEntry};
+        let mut config = DevConfig::default();
+        config.projects.insert(
+            "myproject".to_string(),
+            ProjectEntry {
+                layout: Layout::Default,
+                custom_path: None,
+                host: Some("thisbox".to_string()),
+            },
+        );
+        let mgr = DevManager {
+            config,
+            projects: Vec::new(),
+            projects_dir: PathBuf::from("/tmp"),
+            tmux: Box::new(MockTmux::new()),
+            local_hostname: "thisbox".to_string(),
+        };
+        assert_eq!(mgr.resolve_target("myproject"), Target::Local);
+    }
+
+    #[test]
+    fn resolve_target_default_host_fallback() {
+        let config = DevConfig {
+            default_host: Some("pop-mini".to_string()),
+            ..DevConfig::default()
+        };
+        let mgr = DevManager {
+            config,
+            projects: Vec::new(),
+            projects_dir: PathBuf::from("/tmp"),
+            tmux: Box::new(MockTmux::new()),
+            local_hostname: "phone".to_string(),
+        };
+        assert_eq!(
+            mgr.resolve_target("anything"),
+            Target::Remote("pop-mini".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_target_default_host_local_is_local() {
+        let config = DevConfig {
+            default_host: Some("pop-mini".to_string()),
+            ..DevConfig::default()
+        };
+        let mgr = DevManager {
+            config,
+            projects: Vec::new(),
+            projects_dir: PathBuf::from("/tmp"),
+            tmux: Box::new(MockTmux::new()),
+            local_hostname: "pop-mini".to_string(),
+        };
+        assert_eq!(mgr.resolve_target("anything"), Target::Local);
     }
 }
