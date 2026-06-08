@@ -32,22 +32,67 @@ The package path in `release-please-config.json` and `.release-please-manifest.j
 | stable | `vX.Y.Z` | Published (Latest) | yes |
 | dev | `vX.Y.Z-dev.YYYYMMDD.HASH` | Pre-release | no (`--channel dev`) |
 
-The release workflow detects `-dev.` in the tag name and passes `--prerelease` to `gh release create`.
+---
 
-### Stable release flow
+## Stable release flow
 
-1. Merge PRs to `main` using conventional commit titles (`feat:`, `fix:`, etc.)
-2. release-please opens or updates a Release PR bumping both `Cargo.toml` files and `CHANGELOG.md`
-3. Merge the Release PR — this creates the `vX.Y.Z` tag
-4. The tag triggers `.github/workflows/release.yml`, which builds five targets and publishes the release
+```mermaid
+sequenceDiagram
+    actor Dev
+    participant PR as Feature PR
+    participant main as main branch
+    participant RP as release-please workflow
+    participant RPR as Release PR
+    participant tag as vX.Y.Z tag
+    participant RW as release workflow
+    participant GHR as GitHub Release
 
-### Dev release flow
+    Dev->>PR: merge (squash, conventional title)
+    PR->>main: one commit lands
+    main->>RP: triggers release-please.yml
 
-Manual tag:
-```bash
-git tag v0.0.5-dev.$(date +%Y%m%d).$(git rev-parse --short HEAD)
-git push origin <tag>
+    alt feat: or fix: commit present
+        RP->>RPR: open/update Release PR
+        Note over RPR: bumps dev-cli/Cargo.toml<br/>bumps dev-lib/Cargo.toml<br/>prepends CHANGELOG.md<br/>updates .release-please-manifest.json
+        Dev->>RPR: review and merge
+        RPR->>main: merge commit lands
+        RPR->>tag: release-please creates vX.Y.Z tag
+        tag->>RW: triggers release.yml
+        RW->>GHR: create draft release
+        RW->>GHR: build + upload 5 binaries (parallel)
+        Note over RW,GHR: x86_64-linux-musl<br/>aarch64-linux-musl<br/>aarch64-linux-android<br/>x86_64-apple-darwin<br/>aarch64-apple-darwin
+        RW->>GHR: publish release (Latest)
+    else chore:/docs:/refactor: only
+        RP-->>RPR: no PR opened (nothing to release)
+    end
 ```
+
+## Dev release flow
+
+```mermaid
+sequenceDiagram
+    actor Dev
+    participant main as main branch
+    participant tag as vX.Y.Z-dev.DATE.HASH tag
+    participant RW as release workflow
+    participant GHR as GitHub Release
+
+    Dev->>main: git tag vX.Y.Z-dev.YYYYMMDD.HASH
+    Dev->>tag: git push origin <tag>
+    tag->>RW: triggers release.yml
+    RW->>GHR: create draft pre-release
+    Note over RW,GHR: detects -dev. in tag name<br/>passes --prerelease flag
+    RW->>GHR: build + upload 5 binaries (parallel)
+    RW->>GHR: publish pre-release (not Latest)
+```
+
+The dev channel is never picked up by `bootstrap.sh` default installs. To install a dev build:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_CHANNEL=dev bash
+```
+
+---
 
 ## Alternatives considered
 
@@ -57,7 +102,7 @@ git push origin <tag>
 
 ## Consequences
 
-- All PR titles must be valid Conventional Commits — this is enforced by branch protection and the squash-merge policy.
+- All PR titles must be valid Conventional Commits — enforced by squash-merge policy.
 - `dev-cli/Cargo.toml` and `dev-lib/Cargo.toml` versions are managed by release-please on stable cuts; do not edit them manually.
-- `.release-please-manifest.json` records the last released version under the key `"dev-cli"`. If it drifts from `dev-cli/Cargo.toml`, reset it manually and commit to `main`.
+- `.release-please-manifest.json` records the last released version under key `"dev-cli"`. If it drifts from `dev-cli/Cargo.toml`, reset it manually and commit to `main`.
 - Workspace version inheritance (`version.workspace = true`) must not be used — it breaks the release-please Rust plugin.
