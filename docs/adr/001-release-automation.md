@@ -13,9 +13,11 @@ The project produces a CLI binary (`dev`) distributed as prebuilt binaries via G
 - A stable release tag that triggers the binary build workflow
 - A separate dev channel for pre-release builds
 
-The project uses squash-merge only on `main`, so every merged PR produces exactly one commit on `main`. All PR titles must follow Conventional Commits — this is the input release-please uses to determine version bumps and changelog entries.
+**The CI/CD pipeline must not decide when a stable release happens. That decision belongs to the developer.** Dev builds ship continuously; stable releases are a deliberate, explicit act.
 
-Because the repo requires PRs for all commits to `main`, the Release PR is a structural necessity: release-please must bump `Cargo.toml` and `CHANGELOG.md`, and those file changes must land via a PR. This is not a process choice — it is a constraint of the branch protection model.
+The project uses squash-merge only on `main`, so every merged PR produces exactly one commit. All PR titles must follow Conventional Commits — the input release-please uses to determine version bumps and changelog entries.
+
+Because the repo requires PRs for all commits to `main`, the Release PR is a structural necessity: release-please must bump `Cargo.toml` and `CHANGELOG.md`, and those changes must land via a PR. This is a constraint of the branch protection model, not a process choice.
 
 ## Decision
 
