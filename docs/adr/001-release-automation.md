@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Proposed — pending validation that release-please behaviour aligns with project CI/CD goals (see open thread on PR #36)
 
 ## Context
 
@@ -18,6 +18,19 @@ The project uses squash-merge only on `main`, so every merged PR produces exactl
 ## Decision
 
 Use **release-please** (`googleapis/release-please-action@v4`) for stable release automation.
+
+### Release PR lifecycle
+
+release-please maintains **one** Release PR at a time — it does not open a new PR per commit to `main`. The behaviour per commit type is:
+
+| Commit type | Effect |
+|---|---|
+| `feat:` or `fix:` | Opens the Release PR if none exists; otherwise updates the existing one |
+| `chore:`, `refactor:`, `docs:`, `test:` | No Release PR created or updated |
+
+The Release PR accumulates all pending `feat:` and `fix:` commits since the last tag. You decide when to merge it. Until then, `main` continues to receive commits and the dev channel picks them up via manual tagging — no stable release is created until you deliberately merge the Release PR.
+
+See the [release-please FAQ](https://github.com/googleapis/release-please#release-please-bot-does-not-create-a-release-pr-why) for root causes when no PR appears.
 
 ### Configuration constraints
 
