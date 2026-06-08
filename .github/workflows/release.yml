@@ -28,10 +28,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          prerelease_flag=""
+          [[ "$GITHUB_REF_NAME" == *"-dev."* ]] && prerelease_flag="--prerelease"
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            --draft
+            --draft \
+            $prerelease_flag
 
   build-upload:
     needs: create-release
