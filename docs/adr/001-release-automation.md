@@ -21,14 +21,14 @@ Use **release-please** (`googleapis/release-please-action@v4`) for stable releas
 
 ### Release PR lifecycle
 
-release-please maintains **one** Release PR at a time — it does not open a new PR per commit to `main`. The behaviour per commit type is:
+Since the repo uses squash-merge only, one merged PR = one commit on `main`. release-please maintains **one** Release PR at a time, accumulating all releasable PRs merged since the last stable release:
 
-| Commit type | Effect |
+| Merged PR type | Effect on Release PR |
 |---|---|
 | `feat:` or `fix:` | Opens the Release PR if none exists; otherwise updates the existing one |
-| `chore:`, `refactor:`, `docs:`, `test:` | No Release PR created or updated |
+| `chore:`, `refactor:`, `docs:`, `test:` | No effect — Release PR unchanged |
 
-The Release PR accumulates all pending `feat:` and `fix:` commits since the last tag. You decide when to merge it. Until then, `main` continues to receive commits and the dev channel picks them up via manual tagging — no stable release is created until you deliberately merge the Release PR.
+A stable release may include many merged PRs. The Release PR stays open, accumulating changes, until you deliberately merge it. Until then `main` keeps moving and the dev channel picks up changes via manual tagging — no stable release is created.
 
 See the [release-please FAQ](https://github.com/googleapis/release-please#release-please-bot-does-not-create-a-release-pr-why) for root causes when no PR appears.
 
