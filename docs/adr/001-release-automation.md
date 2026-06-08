@@ -86,10 +86,23 @@ sequenceDiagram
     RW->>GHR: publish pre-release (not Latest)
 ```
 
-The dev channel is never picked up by `bootstrap.sh` default installs. To install a dev build:
+The dev channel is never picked up by `bootstrap.sh` default installs.
 
+### Bootstrap commands
+
+**Host (pop-mini) — stable, enable systemd daemon:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_CHANNEL=dev bash
+curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | bash -s -- --host
+```
+
+**Client (Mac/Termux) — stable channel:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_HOST=pop-mini bash
+```
+
+**Client (Mac/Termux) — dev channel:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_CHANNEL=dev DEV_HOST=pop-mini bash
 ```
 
 ---
