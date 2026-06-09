@@ -332,6 +332,9 @@ fn handle_run(
     body: &[u8],
 ) -> Result<(u16, Value)> {
     let b: RunBody = serde_json::from_slice(body).context("parse run body")?;
+    if !state.tmux.has_session(name)? {
+        return Ok((404, json!({"error": format!("session '{name}' not found")})));
+    }
     let target = format!("{name}:{pane}");
     let timeout = Duration::from_millis(b.timeout_ms.unwrap_or(30_000));
     let out: CommandOutput = state.tmux.run_and_capture(&target, &b.command, timeout)?;
