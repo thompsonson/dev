@@ -12,17 +12,9 @@ Identified during post-sprint tidy-up review. Ranked by severity.
 
 ---
 
-## 2. `dev --local run-in` sends `"run-in"` as the session name — `dev-cli/src/main.rs:124`
+## 2. `dev --local run-in` sends `"run-in"` as the session name — `dev-cli/src/main.rs:124` — FIXED
 
-When a global flag precedes `run-in` (e.g. `dev --local run-in mysession ls`), `raw.iter().skip(1)` skips the flag not `"run-in"`, so `tail = ["run-in", "mysession", "ls"]` and `cmd_run_in` treats `"run-in"` as the session name.
-
-**Fix:** Use the already-filtered `args[1..]` instead of going back to `raw`:
-```rust
-Some("run-in") => {
-    let tail: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
-    cmd_run_in(&tail)
-}
-```
+Used `args[1..]` instead of `raw.iter().skip(1).filter(...)`. `args` already has global flags stripped, so `args[1..]` correctly skips `"run-in"` itself.
 
 ---
 
@@ -85,32 +77,23 @@ Remote dispatch deferred to the HTTPS transport work.
 
 ---
 
-## 8. `DaemonState` holds a separate `RealTmux` alongside `DevManager` — `dev-lib/src/daemon.rs:37`
+## 8. ~~`DaemonState` holds a separate `RealTmux` alongside `DevManager`~~ — CLOSED
 
-The daemon uses `state.tmux` (a bare `RealTmux`) for low-level pane ops and `state.manager` (which already owns a `Box<dyn TmuxBackend>`) for high-level ops. The daemon is untestable with a mock backend because you'd need to swap both independently.
+### Resolution: deferred to HTTPS transport
 
-**Fix:** Remove `tmux` from `DaemonState`; expose pane-level operations through `DevManager` or access the backend via `manager`'s existing field.
-
----
-
-## 9. Silent fallback to empty `projects_dir` — `dev-lib/src/api.rs:62`
-
-`dirs::home_dir().unwrap_or_default()` falls back to `""` when `HOME` is unset (containers, some service contexts). Discovery silently returns zero projects. Should bail with a clear error like the socket path resolution does.
-
-**Fix:**
-```rust
-let projects_dir = dirs::home_dir()
-    .map(|h| h.join("Projects"))
-    .context("HOME directory not set")?;
-```
+`DaemonState` will be rewritten when HTTPS transport lands (new framework, new handler structure). Refactoring it now gets thrown away.
 
 ---
 
-## 10. `parse_layout` implemented twice — `dev-cli/src/main.rs:186` and `dev-lib/src/daemon.rs:251`
+## 9. Silent fallback to empty `projects_dir` — `dev-lib/src/api.rs:62` — FIXED
 
-Two separate implementations; the daemon's version is better (returns `Result`). A new layout variant requires changes in three files.
+Replaced `unwrap_or_default()` with `.context("HOME directory not set")?`. Returns a clear error when `HOME` is unset rather than silently discovering zero projects.
 
-**Fix:** Move a single `parse_layout(s: &str) -> Result<Layout>` into `dev-lib::config` where `Layout` is defined, and use it from both call sites.
+---
+
+## 10. `parse_layout` implemented twice — `dev-cli/src/main.rs:186` and `dev-lib/src/daemon.rs:251` — FIXED
+
+Moved `pub fn parse_layout(s: &str) -> Result<Layout>` into `dev-lib::config` and made `Layout::parse` public. Daemon uses `config::parse_layout`; CLI uses `Layout::parse` (lenient, defaults to Default for unknown values).
 
 ---
 

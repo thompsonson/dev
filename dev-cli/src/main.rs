@@ -121,12 +121,7 @@ fn run() -> Result<()> {
         Some("layout") => cmd_layout(args.get(1).copied()),
         Some("daemon") => cmd_daemon(),
         Some("run-in") => {
-            let tail: Vec<String> = raw
-                .iter()
-                .skip(1)
-                .filter(|a| *a != "--local" && *a != "--force" && *a != "-y")
-                .cloned()
-                .collect();
+            let tail: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
             cmd_run_in(&tail)
         }
         Some(project) => cmd_open(project, None),
@@ -184,10 +179,7 @@ CONFIGURATION
 }
 
 fn parse_layout(s: &str) -> Layout {
-    match s {
-        "claude" => Layout::Claude,
-        _ => Layout::Default,
-    }
+    Layout::parse(s)
 }
 
 // --- Commands ----------------------------------------------------------------

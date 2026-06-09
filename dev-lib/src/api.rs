@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::config::{self, DevConfig, Layout};
 use crate::discovery::{self, DiscoveredProject};
@@ -61,7 +61,7 @@ impl DevManager {
         let config = config::parse_config(&config::config_path())?;
         let projects_dir = dirs::home_dir()
             .map(|h| h.join("Projects"))
-            .unwrap_or_default();
+            .context("HOME directory not set")?;
         let projects = discovery::discover_projects(&projects_dir, &config);
         let local_hostname = hostname::get()
             .ok()
