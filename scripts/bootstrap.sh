@@ -123,29 +123,30 @@ if [[ "$VERSION" == "latest" ]]; then
       [[ -n "$VERSION" ]] || die "could not resolve latest stable release tag"
       ;;
     dev)
-      # Pick the newest pre-release. Requires python3 or jq for reliable JSON
-      # parsing; falls back to grep (may break if GitHub changes field ordering).
+      # Pick the newest pre-release, sorting by created_at so we always get
+      # the latest even when GitHub's API returns releases out of order.
       raw="$(api_fetch "https://api.github.com/repos/${REPO}/releases")"
       if command -v python3 >/dev/null 2>&1; then
         VERSION="$(printf '%s' "$raw" | python3 -c "
 import sys, json
-for r in json.load(sys.stdin):
+releases = json.load(sys.stdin)
+releases.sort(key=lambda r: r.get('created_at', ''), reverse=True)
+for r in releases:
     if r.get('prerelease'):
         print(r['tag_name']); sys.exit(0)
 sys.exit(1)")" || die "no dev release found"
       elif command -v jq >/dev/null 2>&1; then
-        VERSION="$(printf '%s' "$raw" | jq -r '[.[]|select(.prerelease)][0].tag_name')"
+        VERSION="$(printf '%s' "$raw" | jq -r '[.[]|select(.prerelease)]|sort_by(.created_at)|reverse|.[0].tag_name')"
         [[ "$VERSION" != "null" && -n "$VERSION" ]] || die "no dev release found"
       else
-        # Use awk to find the first release where prerelease is true and return
-        # its tag_name. awk is universally available (including Termux) and
-        # correctly checks the prerelease flag rather than just the tag name,
-        # avoiding mislabelled releases. || true prevents set -e from silently
-        # exiting when no pre-release exists.
+        # Collect all prerelease tag_name+created_at pairs, sort by date, pick
+        # the newest. awk is universally available (including Termux).
+        # || true prevents set -e from silently exiting when no pre-release exists.
         VERSION="$(printf '%s' "$raw" | awk '
           /"tag_name"/ { gsub(/.*"tag_name": *"/,""); gsub(/".*$/,""); tag=$0 }
-          /"prerelease": *true/ { if (tag) { print tag; exit } }
-        ' || true)"
+          /"created_at"/ { gsub(/.*"created_at": *"/,""); gsub(/".*$/,""); created=$0 }
+          /"prerelease": *true/ { if (tag && created) { print created, tag; tag=""; created="" } }
+        ' | sort -r | head -1 | awk '{print $2}' || true)"
         [[ -n "$VERSION" ]] || die "no dev release found (install python3 or jq for reliable resolution)"
       fi
       ;;
