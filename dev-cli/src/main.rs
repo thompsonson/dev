@@ -650,7 +650,7 @@ fn http_over_uds(
     let socket_path = dev_lib::daemon::default_socket_path()?;
     let mut stream = UnixStream::connect(&socket_path).with_context(|| {
         format!(
-            "connect to dev daemon at {} (is `dev daemon` running?)",
+            "connect to dev daemon at {} (is `dev daemon` running? if sessions are on a remote host, ssh there and run directly)",
             socket_path.display()
         )
     })?;

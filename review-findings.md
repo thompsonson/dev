@@ -94,20 +94,14 @@ if let Some(n) = lines {
 
 ## 7. `run-in` always runs locally even with `default_host` set — `dev-cli/src/main.rs:124`
 
-### Context
+### Resolution
 
-`run-in` runs a command inside an existing tmux pane and captures its output. Usage: `dev run-in mysession:1.1 ls -la`. It POSTs to `/sessions/{session}/panes/{pane}/run` on the local daemon socket — no remote check anywhere.
+`run-in` operates on the local daemon socket by design — UDS is inherently local. When HTTPS transport is added, remote dispatch becomes a real feature (POST to remote daemon directly). Patching routing logic now would be immediately replaced.
 
-If `default_host` is set (all sessions live on a remote machine), `run-in` connects to the local socket, which has no sessions, and the error looks like a daemon problem rather than a routing problem.
+**Applied:** improved the connection error message to hint at the remote host scenario:
+> `connect to dev daemon at <path> (is 'dev daemon' running? if sessions are on a remote host, ssh there and run directly)`
 
-### Design decision
-
-The right contract is: if `remote_host()` is set and `--local` is not passed, **fail early with a clear error** — not SSH-forward. SSH forwarding for other commands re-invokes `dev <args>` on the remote host; `run-in` with SSH would mean piping tmux pane output over an SSH channel, which is a meaningfully different problem.
-
-Error: `"run-in is not supported for remote sessions; ssh to the host and run directly"`.
-
-### Fix
-Either forward `run-in` via the same SSH pattern as other commands, or emit a clear error: `"run-in is not supported over a remote host; use --local or ssh directly"`.
+Remote dispatch deferred to the HTTPS transport work.
 
 ---
 
