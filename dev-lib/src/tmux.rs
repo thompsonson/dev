@@ -23,6 +23,7 @@ pub struct CommandOutput {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionInfo {
     pub name: String,
+    pub host: String,
     pub pane_count: usize,
     pub attached: bool,
     pub last_activity: u64,
@@ -132,6 +133,7 @@ impl TmuxBackend for RealTmux {
 
             sessions.push(SessionInfo {
                 name,
+                host: String::new(),
                 pane_count,
                 attached,
                 last_activity,
@@ -455,6 +457,7 @@ pub mod mock {
             let pane_count = if *layout == Layout::Claude { 2 } else { 1 };
             self.sessions.borrow_mut().push(SessionInfo {
                 name: name.to_string(),
+                host: String::new(),
                 pane_count,
                 attached: false,
                 last_activity: 0,

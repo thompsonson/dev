@@ -78,7 +78,15 @@ impl DevManager {
 
     /// List active sessions and available projects.
     pub fn list(&self) -> Result<ListOutput> {
-        let sessions = self.tmux.list_sessions()?;
+        let sessions: Vec<_> = self
+            .tmux
+            .list_sessions()?
+            .into_iter()
+            .map(|mut s| {
+                s.host = self.local_hostname.clone();
+                s
+            })
+            .collect();
         let session_names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
 
         let mut projects: Vec<ProjectInfo> = Vec::new();
@@ -351,6 +359,7 @@ mod tests {
     fn stop_existing_session() {
         let mock = MockTmux::with_sessions(vec![SessionInfo {
             name: "myproject".to_string(),
+            host: String::new(),
             pane_count: 1,
             attached: false,
             last_activity: 0,
@@ -370,6 +379,7 @@ mod tests {
     fn list_returns_sessions() {
         let mock = MockTmux::with_sessions(vec![SessionInfo {
             name: "chops".to_string(),
+            host: String::new(),
             pane_count: 2,
             attached: true,
             last_activity: 1000,
