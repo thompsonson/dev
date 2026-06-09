@@ -249,8 +249,14 @@ Environment=PATH=${BIN_DIR}:/usr/local/bin:/usr/bin:/bin
 WantedBy=default.target
 EOF
     systemctl --user daemon-reload
-    systemctl --user enable --now dev-daemon.service
-    log "Daemon running. Logs:  journalctl --user -u dev-daemon.service -f"
+    systemctl --user enable dev-daemon.service
+    if systemctl --user is-active --quiet dev-daemon.service; then
+      systemctl --user restart dev-daemon.service
+      log "Daemon restarted. Logs:  journalctl --user -u dev-daemon.service -f"
+    else
+      systemctl --user start dev-daemon.service
+      log "Daemon started. Logs:  journalctl --user -u dev-daemon.service -f"
+    fi
     ;;
   *)
     log "Binary installed (no role). Pick one next:"
