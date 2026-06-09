@@ -120,6 +120,25 @@ dev help                      Full help text
 
 Project discovery walks `~/Projects/` up to 3 levels deep, treating any directory containing `.git` as a project. Sessions survive disconnects.
 
+`dev list` outputs JSON. Use `jq` to slice it — for example, sessions as a table ordered by most recent activity:
+
+```bash
+dev list | jq -r '
+  def ago: if . < 60 then "\(.)s" elif . < 3600 then "\(./60|floor)m" elif . < 86400 then "\(./3600|floor)h" else "\(./86400|floor)d" end;
+  ["NAME","LAYOUT","PANES","ACTIVE"],
+  (.sessions | sort_by(.last_activity) | reverse | .[] |
+    [.name, .layout, (.pane_count|tostring), (now - .last_activity | floor | ago)])
+  | @tsv
+' | column -t -s $'\t' | awk 'NR==1{print; gsub(/[^ ]/,"-"); print} NR>1'
+```
+
+```
+NAME        LAYOUT   PANES  ACTIVE
+----------  -------  -----  ------
+dev         default  1      56s
+manta-site  default  1      3m
+```
+
 ### Project config
 
 Per-project layouts live in `~/.config/dev/config`:
