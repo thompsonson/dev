@@ -72,20 +72,11 @@ The custom config format has inherent ambiguity around `@` in paths. Fixing the 
 
 ---
 
-## 6. `?lines=` not validated as an integer — `dev-lib/src/daemon.rs:280`
+## 6. ~~`?lines=` not validated as an integer~~ — CLOSED
 
-The raw query string value is formatted directly into `-{n}` and passed to `tmux capture-pane`. A non-numeric value produces a confusing tmux error rather than a clean `400`.
+### Resolution: deferred to HTTPS transport
 
-**Fix:**
-```rust
-if let Some(n) = lines {
-    let n: u32 = n.parse().map_err(|_| anyhow::anyhow!("lines must be a positive integer"))?;
-    // return 400 on error
-    start_arg = format!("-{n}");
-    args.push("-S");
-    args.push(&start_arg);
-}
-```
+The endpoint is not called from the CLI — only reachable by direct UDS callers. Input validation and proper `400` responses will be handled when the transport moves to HTTPS and a proper framework takes over query parameter parsing.
 
 ---
 
@@ -153,7 +144,7 @@ Two separate implementations; the daemon's version is better (returns `Result`).
 | 3 | ~~closed — not a bug~~ | — |
 | 4 | `http_over_uds` returns `(status, body)`; non-200 surfaces `"error"` field | `dev-cli` |
 | 5 | ~~closed — config migrating to TOML~~ | — |
-| 6 | Non-integer `?lines=abc` returns 400 | `dev-lib/daemon.rs` |
+| 6 | ~~closed — deferred to HTTPS transport~~ | — |
 | 7 | `run-in` with `default_host` set and no `--local` returns clear error | `dev-cli` |
 | 8 | Daemon pane ops work with `MockTmux` (enabled by finding 8 refactor) | `dev-lib/daemon.rs` |
 | 9 | `list_projects` returns error when HOME is unset | `dev-lib/api.rs` |
