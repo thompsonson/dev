@@ -58,50 +58,69 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let raw: Vec<String> = std::env::args().skip(1).collect();
 
     // Ensure tmux is available
     if Command::new("tmux").arg("-V").output().is_err() {
         bail!("tmux is not installed");
     }
 
-    match args.first().map(|s| s.as_str()) {
-        None => cmd_picker(),
+    // Extract global flags before command dispatch.
+    //   --local   run against the local machine even when default_host is set
+    //   --force / -y   skip confirmation prompts (kill-all)
+    let local = raw.iter().any(|a| a == "--local");
+    let force = raw.iter().any(|a| a == "--force" || a == "-y");
+    let args: Vec<&str> = raw
+        .iter()
+        .filter(|a| *a != "--local" && *a != "--force" && *a != "-y")
+        .map(|a| a.as_str())
+        .collect();
+
+    match args.first().copied() {
+        None => cmd_picker(local),
         Some("help" | "--help" | "-h") => {
             cmd_help();
             Ok(())
         }
-        Some("list") => cmd_list(),
+        Some("list") => cmd_list(local),
         Some("start") => {
-            let project = args.get(1).map(|s| s.as_str()).unwrap_or_else(|| {
+            let project = args.get(1).copied().unwrap_or_else(|| {
                 die("Usage: dev start <project> [layout]");
             });
             let layout = args.get(2).map(|s| parse_layout(s));
             cmd_start(project, layout)
         }
         Some("stop") => {
-            let session = args.get(1).map(|s| s.as_str()).unwrap_or_else(|| {
+            let session = args.get(1).copied().unwrap_or_else(|| {
                 die("Usage: dev stop <session>");
             });
-            cmd_stop(session)
+            cmd_stop(session, local)
         }
         Some("detach") => cmd_detach(),
         Some("kill") => {
-            let name = args.get(1).map(|s| s.as_str()).unwrap_or_else(|| {
+            let name = args.get(1).copied().unwrap_or_else(|| {
                 die("Usage: dev kill <session-name>");
             });
             cmd_kill(name)
         }
-        Some("kill-all") => cmd_kill_all(),
+        Some("kill-all") => cmd_kill_all(local, force),
         Some("claude") => {
-            let project = args.get(1).map(|s| s.as_str()).unwrap_or_else(|| {
+            let project = args.get(1).copied().unwrap_or_else(|| {
                 die("Usage: dev claude <project>");
             });
             cmd_open(project, Some(Layout::Claude))
         }
-        Some("layout") => cmd_layout(args.get(1).map(|s| s.as_str())),
+        Some("layout") => cmd_layout(args.get(1).copied()),
         Some("daemon") => cmd_daemon(),
-        Some("run-in") => cmd_run_in(&args[1..]),
+        Some("run-in") => {
+            let tail: Vec<String> = raw
+                .iter()
+                .skip(1)
+                .filter(|a| *a != "--local" && *a != "--force" && *a != "-y")
+                .cloned()
+                .collect();
+            cmd_run_in(&tail)
+        }
         Some(project) => cmd_open(project, None),
     }
 }
@@ -123,6 +142,11 @@ USAGE
   dev kill <name>         Kill a session
   dev kill-all            Kill all sessions (with confirmation)
   dev help                Show this help
+
+FLAGS
+  --local                 Run against the local machine even when default_host is set
+                          (applies to: dev, list, stop, kill-all)
+  --force / -y            Skip confirmation prompt (applies to: kill-all)
 
 LAYOUTS
   default                 Single shell pane in the project directory
@@ -159,8 +183,13 @@ fn parse_layout(s: &str) -> Layout {
 
 // --- Commands ----------------------------------------------------------------
 
-fn cmd_list() -> Result<()> {
+fn cmd_list(local: bool) -> Result<()> {
     let mgr = DevManager::new()?;
+    if !local {
+        if let Some(host) = mgr.remote_host() {
+            return forward_remote(&host, &["list"]);
+        }
+    }
     let output = mgr.list()?;
     println!("{}", serde_json::to_string(&output)?);
     Ok(())
@@ -176,8 +205,13 @@ fn cmd_start(project: &str, layout: Option<Layout>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_stop(session: &str) -> Result<()> {
+fn cmd_stop(session: &str, local: bool) -> Result<()> {
     let mgr = DevManager::new()?;
+    if !local {
+        if let Some(host) = mgr.remote_host() {
+            return forward_remote(&host, &["stop", session]);
+        }
+    }
     mgr.stop(session)?;
     info(&format!("Session '{}' stopped", session));
     Ok(())
@@ -220,8 +254,17 @@ fn cmd_kill(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_kill_all() -> Result<()> {
+fn cmd_kill_all(local: bool, force: bool) -> Result<()> {
     let mgr = DevManager::new()?;
+    if !local {
+        if let Some(host) = mgr.remote_host() {
+            let mut fwd_args = vec!["kill-all"];
+            if force {
+                fwd_args.push("--force");
+            }
+            return forward_remote(&host, &fwd_args);
+        }
+    }
     let output = mgr.list()?;
     let count = output.sessions.len();
 
@@ -230,22 +273,24 @@ fn cmd_kill_all() -> Result<()> {
         return Ok(());
     }
 
-    let c = Colors::new();
-    eprintln!("{}This will kill {} session(s):{}", c.yellow, count, c.nc);
-    for s in &output.sessions {
-        eprintln!("  {} ({})", s.name, s.layout);
-    }
-    eprint!("Confirm? [y/N] ");
-    io::stderr().flush()?;
+    if !force {
+        let c = Colors::new();
+        eprintln!("{}This will kill {} session(s):{}", c.yellow, count, c.nc);
+        for s in &output.sessions {
+            eprintln!("  {} ({})", s.name, s.layout);
+        }
+        eprint!("Confirm? [y/N] ");
+        io::stderr().flush()?;
 
-    let mut input = String::new();
-    io::stdin().lock().read_line(&mut input)?;
-    if input.trim().eq_ignore_ascii_case("y") {
-        mgr.kill_all()?;
-        info("All sessions killed");
-    } else {
-        info("Cancelled");
+        let mut input = String::new();
+        io::stdin().lock().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            info("Cancelled");
+            return Ok(());
+        }
     }
+    mgr.kill_all()?;
+    info("All sessions killed");
 
     Ok(())
 }
@@ -302,8 +347,13 @@ fn cmd_layout(name: Option<&str>) -> Result<()> {
     }
 }
 
-fn cmd_picker() -> Result<()> {
+fn cmd_picker(local: bool) -> Result<()> {
     let mgr = DevManager::new()?;
+    if !local {
+        if let Some(host) = mgr.remote_host() {
+            return forward_remote(&host, &[]);
+        }
+    }
     let output = mgr.list()?;
 
     if output.sessions.is_empty() && output.projects.is_empty() {

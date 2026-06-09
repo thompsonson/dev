@@ -300,6 +300,18 @@ impl DevManager {
         }
     }
 
+    /// Returns the host that global commands (list, picker, kill-all) should
+    /// be forwarded to. `Some(host)` when `default_host` is configured and
+    /// resolves to a different machine; `None` on the host itself.
+    pub fn remote_host(&self) -> Option<String> {
+        let host = self.config.default_host.clone()?;
+        if host == self.local_hostname {
+            None
+        } else {
+            Some(host)
+        }
+    }
+
     /// Get the list of discovered projects (for CLI picker).
     pub fn discovered_projects(&self) -> &[DiscoveredProject] {
         &self.projects
