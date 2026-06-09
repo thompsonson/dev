@@ -550,9 +550,18 @@ fn attach(session: &str) -> Result<()> {
 /// Forward a command to a remote host via SSH, replacing the current process.
 /// On Unix this never returns on success (`exec`). On non-Unix or on SSH
 /// failure it returns an `Err` which the caller propagates normally.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn forward_remote(host: &str, args: &[&str]) -> Result<()> {
-    let dev_args = args.join(" ");
-    let remote_cmd = format!("dev {dev_args}");
+    let remote_cmd = format!(
+        "dev {}",
+        args.iter()
+            .map(|a| sh_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
 
     #[cfg(unix)]
     {

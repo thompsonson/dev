@@ -4,19 +4,11 @@ Identified during post-sprint tidy-up review. Ranked by severity.
 
 ---
 
-## 1. Shell injection in `forward_remote` — `dev-cli/src/main.rs:554`
+## 1. Shell injection in `forward_remote` — `dev-cli/src/main.rs:554` — FIXED
 
-`args.join(" ")` is passed as a single shell string to `ssh -t host "dev ..."`. SSH runs it via the remote shell, so a session name containing metacharacters executes arbitrary commands on the remote host.
+`args.join(" ")` was passed as a single shell string to `ssh -t host "dev ..."`. SSH runs it via the remote shell, so a session name containing metacharacters could execute arbitrary commands on the remote host.
 
-**Concrete:** `dev stop "foo; touch /tmp/pwned"` → remote shell runs both commands.
-
-**Fix:** Shell-escape each arg before joining:
-```rust
-fn sh_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-let remote_cmd = format!("dev {}", args.iter().map(sh_quote).collect::<Vec<_>>().join(" "));
-```
+**Applied:** added `sh_quote` to `dev-cli/src/main.rs`; each arg is now POSIX single-quote escaped before joining.
 
 ---
 
