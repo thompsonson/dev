@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::config::{self, DevConfig, Layout};
 use crate::discovery::{self, DiscoveredProject};
@@ -61,7 +61,7 @@ impl DevManager {
         let config = config::parse_config(&config::config_path())?;
         let projects_dir = dirs::home_dir()
             .map(|h| h.join("Projects"))
-            .unwrap_or_default();
+            .context("HOME directory not set")?;
         let projects = discovery::discover_projects(&projects_dir, &config);
         let local_hostname = hostname::get()
             .ok()
@@ -490,5 +490,37 @@ mod tests {
             local_hostname: "pop-mini".to_string(),
         };
         assert_eq!(mgr.resolve_target("anything"), Target::Local);
+    }
+
+    #[test]
+    fn start_creates_locally_regardless_of_host_config() {
+        // Routing is the CLI's responsibility. The daemon always acts locally;
+        // @host config entries are client-side hints and have no meaning here.
+        use crate::config::{DevConfig, Layout, ProjectEntry};
+        use crate::discovery::DiscoveredProject;
+
+        let mut config = DevConfig::default();
+        config.projects.insert(
+            "myproject".to_string(),
+            ProjectEntry {
+                layout: Layout::Default,
+                custom_path: None,
+                host: Some("remotehost".to_string()),
+            },
+        );
+        let mock = MockTmux::new();
+        let mgr = DevManager {
+            config,
+            projects: vec![DiscoveredProject {
+                display_name: "myproject".to_string(),
+                full_path: PathBuf::from("/tmp/myproject"),
+            }],
+            projects_dir: PathBuf::from("/tmp"),
+            tmux: Box::new(mock),
+            local_hostname: "localhost".to_string(),
+        };
+
+        let session_name = mgr.start("myproject", None).unwrap();
+        assert_eq!(session_name, "myproject");
     }
 }

@@ -243,17 +243,13 @@ struct StartBody {
 
 fn handle_start_session(state: &mut DaemonState, body: &[u8]) -> Result<(u16, Value)> {
     let b: StartBody = serde_json::from_slice(body).context("parse start body")?;
-    let layout = b.layout.as_deref().map(parse_layout).transpose()?;
+    let layout = b
+        .layout
+        .as_deref()
+        .map(crate::config::parse_layout)
+        .transpose()?;
     let name = state.manager.start(&b.project, layout)?;
     Ok((201, json!({"session": name})))
-}
-
-fn parse_layout(s: &str) -> Result<crate::config::Layout> {
-    match s {
-        "default" => Ok(crate::config::Layout::Default),
-        "claude" => Ok(crate::config::Layout::Claude),
-        other => bail!("unknown layout: {other}"),
-    }
 }
 
 fn handle_stop_session(state: &mut DaemonState, name: &str) -> Result<(u16, Value)> {
@@ -336,6 +332,9 @@ fn handle_run(
     body: &[u8],
 ) -> Result<(u16, Value)> {
     let b: RunBody = serde_json::from_slice(body).context("parse run body")?;
+    if !state.tmux.has_session(name)? {
+        return Ok((404, json!({"error": format!("session '{name}' not found")})));
+    }
     let target = format!("{name}:{pane}");
     let timeout = Duration::from_millis(b.timeout_ms.unwrap_or(30_000));
     let out: CommandOutput = state.tmux.run_and_capture(&target, &b.command, timeout)?;
@@ -421,13 +420,13 @@ mod tests {
     #[test]
     fn parse_layout_known() {
         assert!(matches!(
-            parse_layout("default").unwrap(),
+            crate::config::parse_layout("default").unwrap(),
             crate::config::Layout::Default
         ));
         assert!(matches!(
-            parse_layout("claude").unwrap(),
+            crate::config::parse_layout("claude").unwrap(),
             crate::config::Layout::Claude
         ));
-        assert!(parse_layout("weird").is_err());
+        assert!(crate::config::parse_layout("weird").is_err());
     }
 }

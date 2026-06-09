@@ -12,7 +12,7 @@ pub enum Layout {
 }
 
 impl Layout {
-    fn parse(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "claude" => Self::Claude,
             _ => Self::Default,
@@ -55,6 +55,15 @@ impl Default for DevConfig {
             default_host: None,
             projects: HashMap::new(),
         }
+    }
+}
+
+/// Parse a layout string strictly — errors on unknown values.
+pub fn parse_layout(s: &str) -> Result<Layout> {
+    match s {
+        "default" => Ok(Layout::Default),
+        "claude" => Ok(Layout::Claude),
+        other => anyhow::bail!("unknown layout: {other}"),
     }
 }
 
