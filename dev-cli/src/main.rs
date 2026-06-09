@@ -121,12 +121,7 @@ fn run() -> Result<()> {
         Some("layout") => cmd_layout(args.get(1).copied()),
         Some("daemon") => cmd_daemon(),
         Some("run-in") => {
-            let tail: Vec<String> = raw
-                .iter()
-                .skip(1)
-                .filter(|a| *a != "--local" && *a != "--force" && *a != "-y")
-                .cloned()
-                .collect();
+            let tail: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
             cmd_run_in(&tail)
         }
         Some(project) => cmd_open(project, None),
@@ -184,10 +179,7 @@ CONFIGURATION
 }
 
 fn parse_layout(s: &str) -> Layout {
-    match s {
-        "claude" => Layout::Claude,
-        _ => Layout::Default,
-    }
+    Layout::parse(s)
 }
 
 // --- Commands ----------------------------------------------------------------
@@ -550,9 +542,18 @@ fn attach(session: &str) -> Result<()> {
 /// Forward a command to a remote host via SSH, replacing the current process.
 /// On Unix this never returns on success (`exec`). On non-Unix or on SSH
 /// failure it returns an `Err` which the caller propagates normally.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn forward_remote(host: &str, args: &[&str]) -> Result<()> {
-    let dev_args = args.join(" ");
-    let remote_cmd = format!("dev {dev_args}");
+    let remote_cmd = format!(
+        "dev {}",
+        args.iter()
+            .map(|a| sh_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
 
     #[cfg(unix)]
     {
@@ -618,6 +619,10 @@ fn cmd_run_in(args: &[String]) -> Result<()> {
     let path = format!("/sessions/{session}/panes/{pane}/run");
     let resp = http_over_uds("POST", &path, Some(&body))?;
 
+    if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+        bail!("{err}");
+    }
+
     if json_out {
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
@@ -650,7 +655,7 @@ fn http_over_uds(
     let socket_path = dev_lib::daemon::default_socket_path()?;
     let mut stream = UnixStream::connect(&socket_path).with_context(|| {
         format!(
-            "connect to dev daemon at {} (is `dev daemon` running?)",
+            "connect to dev daemon at {} (is `dev daemon` running? if sessions are on a remote host, ssh there and run directly)",
             socket_path.display()
         )
     })?;
