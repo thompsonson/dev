@@ -120,6 +120,11 @@ fn run() -> Result<()> {
         }
         Some("layout") => cmd_layout(args.get(1).copied()),
         Some("daemon") => cmd_daemon(),
+        Some("doctor") => cmd_doctor(),
+        Some("update") => {
+            let check_only = raw.iter().any(|a| a == "--check");
+            cmd_update(force, check_only)
+        }
         Some("run-in") => {
             let tail: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
             cmd_run_in(&tail)
@@ -144,6 +149,8 @@ USAGE
   dev detach              Detach from current tmux session
   dev kill <name>         Kill a session
   dev kill-all            Kill all sessions (with confirmation)
+  dev doctor              Check environment and config
+  dev update              Check for and apply updates
   dev version             Print version and exit
   dev help                Show this help
 
@@ -563,6 +570,308 @@ fn forward_remote(host: &str, args: &[&str]) -> Result<()> {
     }
     #[cfg(not(unix))]
     bail!("remote forwarding is not supported on this platform");
+}
+
+fn cmd_doctor() -> Result<()> {
+    let c = Colors::new();
+    let mut all_ok = true;
+
+    macro_rules! ok {
+        ($msg:expr) => {{
+            eprintln!("  {}✓{} {}", c.green, c.nc, $msg);
+        }};
+    }
+    macro_rules! fail {
+        ($msg:expr) => {{
+            eprintln!("  {}✗{} {}", c.red, c.nc, $msg);
+            all_ok = false;
+        }};
+    }
+
+    // tmux
+    match Command::new("tmux").arg("-V").output() {
+        Ok(o) if o.status.success() => {
+            ok!(String::from_utf8_lossy(&o.stdout).trim().to_string());
+        }
+        _ => fail!("tmux: not found — install via your package manager"),
+    }
+
+    // ssh (writes its version to stderr)
+    match Command::new("ssh").arg("-V").output() {
+        Ok(o) => {
+            let ver = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            if !ver.is_empty() {
+                ok!(ver);
+            } else {
+                fail!("ssh: not found — install openssh");
+            }
+        }
+        _ => fail!("ssh: not found — install openssh"),
+    }
+
+    // daemon socket
+    let socket_path = dev_lib::daemon::default_socket_path()?;
+    if socket_path.exists() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        match UnixStream::connect(&socket_path) {
+            Ok(mut s) => {
+                // minimal probe: send a request and look for any HTTP response
+                let req = "GET /sessions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+                let _ = s.write_all(req.as_bytes());
+                let mut buf = [0u8; 32];
+                match s.read(&mut buf) {
+                    Ok(n) if n > 0 => ok!(format!(
+                        "daemon socket {} responsive",
+                        socket_path.display()
+                    )),
+                    _ => fail!(format!(
+                        "daemon socket {} exists but not responsive",
+                        socket_path.display()
+                    )),
+                }
+            }
+            Err(_) => fail!(format!(
+                "daemon socket {} not responsive — run 'dev daemon' or 'bootstrap.sh --host'",
+                socket_path.display()
+            )),
+        }
+    } else {
+        // Not a failure on client machines — only expected on hosts
+        let is_host = Command::new("systemctl")
+            .args(["--user", "is-active", "--quiet", "dev-daemon.service"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if is_host {
+            fail!(format!(
+                "daemon socket missing (service claims active) — restart: systemctl --user restart dev-daemon.service"
+            ));
+        } else {
+            eprintln!("  {}–{} daemon not running (client mode)", c.yellow, c.nc);
+        }
+    }
+
+    // config
+    let config_path = dev_lib::config::config_path();
+    if config_path.exists() {
+        let warnings = dev_lib::config::validate_config(&config_path);
+        if warnings.is_empty() {
+            ok!(format!("config {} valid", config_path.display()));
+        } else {
+            for w in &warnings {
+                fail!(w.clone());
+            }
+        }
+    } else {
+        eprintln!(
+            "  {}–{} config not found at {} (using defaults)",
+            c.yellow,
+            c.nc,
+            config_path.display()
+        );
+    }
+
+    // default_host reachability
+    let config = dev_lib::config::parse_config(&config_path)?;
+    if let Some(ref host) = config.default_host {
+        match Command::new("ssh")
+            .args([
+                "-o",
+                "ConnectTimeout=5",
+                "-o",
+                "BatchMode=yes",
+                host,
+                "true",
+            ])
+            .status()
+        {
+            Ok(s) if s.success() => ok!(format!("default_host={host} reachable")),
+            _ => fail!(format!(
+                "default_host={host} unreachable — check ssh config"
+            )),
+        }
+    }
+
+    // version check (best-effort, no failure on network error)
+    let current = env!("DEV_VERSION");
+    let channel = if current.contains("-dev.") {
+        "dev"
+    } else {
+        "stable"
+    };
+    match resolve_latest_version(channel) {
+        Ok(latest) if normalize_version(&latest) != normalize_version(current) => {
+            eprintln!(
+                "  {}–{} update available: {} -> {} (run 'dev update')",
+                c.yellow, c.nc, current, latest
+            );
+        }
+        _ => {}
+    }
+
+    if !all_ok {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn cmd_update(force: bool, check_only: bool) -> Result<()> {
+    let current = env!("DEV_VERSION");
+    let channel = if current.contains("-dev.") {
+        "dev"
+    } else {
+        "stable"
+    };
+
+    let latest = resolve_latest_version(channel)?;
+
+    if normalize_version(&latest) == normalize_version(current) {
+        info(&format!("Already up to date ({})", current));
+        return Ok(());
+    }
+
+    if check_only {
+        eprintln!("Update available: {} -> {}", current, latest);
+        std::process::exit(1);
+    }
+
+    eprintln!("Current: {}", current);
+    eprintln!("Latest:  {}", latest);
+
+    if !force {
+        let c = Colors::new();
+        eprint!("{}Apply update?{} [y/N] ", c.yellow, c.nc);
+        io::stderr().flush()?;
+        let mut input = String::new();
+        io::stdin().lock().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            info("Cancelled");
+            return Ok(());
+        }
+    }
+
+    apply_update(&latest)?;
+
+    // Restart daemon if it's running as a systemd service on this host
+    if Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", "dev-daemon.service"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
+        info("Restarting daemon...");
+        Command::new("systemctl")
+            .args(["--user", "restart", "dev-daemon.service"])
+            .status()?;
+    }
+
+    info(&format!("Updated to {}", latest));
+    Ok(())
+}
+
+/// Fetch the latest release tag for the given channel ("stable" or "dev").
+fn resolve_latest_version(channel: &str) -> Result<String> {
+    match channel {
+        "stable" => {
+            let body = github_api_get("releases/latest")?;
+            let v: serde_json::Value = serde_json::from_str(&body)?;
+            v["tag_name"]
+                .as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| anyhow::anyhow!("no tag_name in latest release response"))
+        }
+        _ => {
+            // dev channel: find the newest prerelease sorted by created_at
+            let body = github_api_get("releases")?;
+            let releases: serde_json::Value = serde_json::from_str(&body)?;
+            let Some(arr) = releases.as_array() else {
+                bail!("unexpected releases response");
+            };
+            let mut prereleases: Vec<(&str, &str)> = arr
+                .iter()
+                .filter(|r| r["prerelease"].as_bool().unwrap_or(false))
+                .filter_map(|r| {
+                    let tag = r["tag_name"].as_str()?;
+                    let created = r["created_at"].as_str()?;
+                    Some((created, tag))
+                })
+                .collect();
+            prereleases.sort_by(|a, b| b.0.cmp(a.0));
+            prereleases
+                .first()
+                .map(|(_, tag)| tag.to_string())
+                .ok_or_else(|| anyhow::anyhow!("no dev pre-release found"))
+        }
+    }
+}
+
+/// Call the GitHub API and return the response body.
+fn github_api_get(path: &str) -> Result<String> {
+    let url = format!("https://api.github.com/repos/thompsonson/dev/{path}");
+    let out = Command::new("curl")
+        .args([
+            "-fsSL",
+            "--retry",
+            "3",
+            "-H",
+            "Accept: application/vnd.github.v3+json",
+            &url,
+        ])
+        .output()
+        .or_else(|_| {
+            Command::new("wget")
+                .args([
+                    "-qO-",
+                    "--header=Accept: application/vnd.github.v3+json",
+                    &url,
+                ])
+                .output()
+        })
+        .context("need curl or wget to check for updates")?;
+    if !out.status.success() {
+        bail!("GitHub API request failed for {url}");
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Download bootstrap.sh from GitHub and run it with `--version <tag>`.
+fn apply_update(version: &str) -> Result<()> {
+    let bootstrap_url =
+        "https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh";
+
+    // Download bootstrap.sh to a temp file
+    let tmp = std::env::temp_dir().join("dev-bootstrap.sh");
+    let status = Command::new("curl")
+        .args(["-fsSL", "--retry", "3", bootstrap_url, "-o"])
+        .arg(&tmp)
+        .status()
+        .or_else(|_| {
+            Command::new("wget")
+                .args(["-qO"])
+                .arg(&tmp)
+                .arg(bootstrap_url)
+                .status()
+        })
+        .context("need curl or wget to download update")?;
+    if !status.success() {
+        bail!("failed to download bootstrap.sh");
+    }
+
+    let status = Command::new("bash")
+        .arg(&tmp)
+        .args(["--version", version])
+        .status()?;
+    let _ = std::fs::remove_file(&tmp);
+    if !status.success() {
+        bail!("update installation failed");
+    }
+    Ok(())
+}
+
+/// Strip a leading `v` for version comparisons.
+fn normalize_version(v: &str) -> &str {
+    v.strip_prefix('v').unwrap_or(v)
 }
 
 fn cmd_daemon() -> Result<()> {
