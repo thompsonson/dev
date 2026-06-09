@@ -64,11 +64,11 @@ Proper status codes and `http_over_uds` return type deferred to the HTTPS transp
 
 ---
 
-## 5. `@` in a path silently breaks host parsing — `dev-lib/src/config.rs:98`
+## 5. ~~`@` in a path silently breaks host parsing~~ — CLOSED
 
-`rsplit_once('@')` takes the *last* `@`. A config line like `proj=default:~/some@dir` (path contains `@`, no host intended) silently parses `custom_path = "~/some"` and `host = "dir"`. No warning, and the project gets routed to `ssh dir`.
+### Resolution: migrate to TOML
 
-**Fix:** Require the `@host` suffix to follow the layout/path portion with no ambiguity — e.g. split on layout first, then check if the remainder (after `:`) contains `@` only at the end, or document that `@` is reserved in paths and validate accordingly.
+The custom config format has inherent ambiguity around `@` in paths. Fixing the parser is low value — the config format will be replaced with TOML, which makes path and host separate keys and eliminates the ambiguity entirely. Deferred to that migration.
 
 ---
 
@@ -152,7 +152,7 @@ Two separate implementations; the daemon's version is better (returns `Result`).
 | 2 | Arg parsing with `dev --local run-in mysession ls` uses correct tail | `dev-cli` |
 | 3 | ~~closed — not a bug~~ | — |
 | 4 | `http_over_uds` returns `(status, body)`; non-200 surfaces `"error"` field | `dev-cli` |
-| 5 | `proj=default:~/some@dir` errors or treats whole string as path | `dev-lib/config.rs` |
+| 5 | ~~closed — config migrating to TOML~~ | — |
 | 6 | Non-integer `?lines=abc` returns 400 | `dev-lib/daemon.rs` |
 | 7 | `run-in` with `default_host` set and no `--local` returns clear error | `dev-cli` |
 | 8 | Daemon pane ops work with `MockTmux` (enabled by finding 8 refactor) | `dev-lib/daemon.rs` |
