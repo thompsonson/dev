@@ -618,6 +618,10 @@ fn cmd_run_in(args: &[String]) -> Result<()> {
     let path = format!("/sessions/{session}/panes/{pane}/run");
     let resp = http_over_uds("POST", &path, Some(&body))?;
 
+    if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+        bail!("{err}");
+    }
+
     if json_out {
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {

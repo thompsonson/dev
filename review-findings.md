@@ -48,22 +48,19 @@ Some("run-in") => {
 
 ## 4. HTTP status ignored in `cmd_run_in` — `dev-cli/src/main.rs:620`
 
-### Context
+### Resolution
 
-`http_over_uds` is a hand-rolled HTTP/1.1 client over a Unix domain socket (no `reqwest` or `hyper` — raw bytes). It:
-1. Opens a `UnixStream` to the daemon socket
-2. Writes a raw HTTP request
-3. Reads the full response
-4. Splits on `\r\n\r\n` to find the body
-5. JSON-parses the body and returns `serde_json::Value`
+The hand-rolled `http_over_uds` client goes away when HTTPS transport lands — changing its return type now gets thrown away. The daemon also uses `500` for "session not found" where `404` would be correct; fixing status code handling before fixing the status codes themselves is premature.
 
-The status code is parsed but thrown away (line 681 parses only the body). A `500 {"error": "session not found"}` and a `200 {"stdout": "..."}` both return `Ok(Value)`. `cmd_run_in` then calls `.get("stdout")` on the error response, gets `None`, prints a blank line with `exit=-1`.
+The `{"error": "..."}` body shape is stable across transports. Applied a one-liner guard in `cmd_run_in` that surfaces the error field regardless of status code:
 
-### Design question (TDD forcing function)
-Return type should be `(u16, serde_json::Value)` so callers can branch on status. The status line is already in the raw bytes (`HTTP/1.1 500 ...`) — needs to be parsed and threaded through. Every command that calls `http_over_uds` benefits.
+```rust
+if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+    bail!("{err}");
+}
+```
 
-### Fix
-Parse and return the HTTP status line in `http_over_uds`; surface the `"error"` field on non-200 responses in all callers.
+Proper status codes and `http_over_uds` return type deferred to the HTTPS transport work.
 
 ---
 
