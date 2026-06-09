@@ -120,7 +120,14 @@ fn run() -> Result<()> {
         }
         Some("layout") => cmd_layout(args.get(1).copied()),
         Some("daemon") => cmd_daemon(),
-        Some("doctor") => cmd_doctor(),
+        Some("doctor") => {
+            let config_path = args
+                .iter()
+                .position(|a| *a == "--config")
+                .and_then(|i| args.get(i + 1).copied())
+                .map(std::path::PathBuf::from);
+            cmd_doctor(config_path.as_deref())
+        }
         Some("update") => {
             let check_only = raw.iter().any(|a| a == "--check");
             cmd_update(force, check_only)
@@ -149,7 +156,7 @@ USAGE
   dev detach              Detach from current tmux session
   dev kill <name>         Kill a session
   dev kill-all            Kill all sessions (with confirmation)
-  dev doctor              Check environment and config
+  dev doctor [--config F] Check environment and config
   dev update              Check for and apply updates
   dev version             Print version and exit
   dev help                Show this help
@@ -572,7 +579,7 @@ fn forward_remote(host: &str, args: &[&str]) -> Result<()> {
     bail!("remote forwarding is not supported on this platform");
 }
 
-fn cmd_doctor() -> Result<()> {
+fn cmd_doctor(config_override: Option<&std::path::Path>) -> Result<()> {
     let c = Colors::new();
     let mut all_ok = true;
 
@@ -653,7 +660,9 @@ fn cmd_doctor() -> Result<()> {
     }
 
     // config
-    let config_path = dev_lib::config::config_path();
+    let config_path = config_override
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(dev_lib::config::config_path);
     if config_path.exists() {
         let warnings = dev_lib::config::validate_config(&config_path);
         if warnings.is_empty() {
