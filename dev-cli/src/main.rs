@@ -60,6 +60,14 @@ fn main() {
 fn run() -> Result<()> {
     let raw: Vec<String> = std::env::args().skip(1).collect();
 
+    // Version check before tmux guard — no tmux needed to print a version.
+    if raw.first().map(|s| s.as_str()) == Some("version")
+        || raw.iter().any(|a| a == "--version" || a == "-V")
+    {
+        println!("{}", env!("DEV_VERSION"));
+        return Ok(());
+    }
+
     // Ensure tmux is available
     if Command::new("tmux").arg("-V").output().is_err() {
         bail!("tmux is not installed");
@@ -141,6 +149,7 @@ USAGE
   dev detach              Detach from current tmux session
   dev kill <name>         Kill a session
   dev kill-all            Kill all sessions (with confirmation)
+  dev version             Print version and exit
   dev help                Show this help
 
 FLAGS
