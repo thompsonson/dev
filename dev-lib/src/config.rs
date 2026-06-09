@@ -74,6 +74,64 @@ pub fn config_path() -> PathBuf {
         .join(".config/dev/config")
 }
 
+/// Validate the config file at `path`. Returns a list of human-readable
+/// warning strings (empty = all clear). Does not error on a missing file.
+pub fn validate_config(path: &Path) -> Vec<String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => return vec![format!("config: cannot read file: {e}")],
+    };
+
+    let known_layouts = ["default", "claude"];
+    let mut warnings = Vec::new();
+
+    for (i, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            warnings.push(format!("config line {}: missing '=' separator", i + 1));
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+
+        if key == "default_layout" {
+            if !known_layouts.contains(&value) {
+                warnings.push(format!(
+                    "config: unknown layout '{value}' for default_layout (known: default, claude)"
+                ));
+            }
+            continue;
+        }
+
+        if key == "default_host" {
+            continue;
+        }
+
+        // Warn on keys that look like typos of the two special keys.
+        if key.starts_with("default_") {
+            warnings.push(format!(
+                "config: unknown key '{key}' — did you mean 'default_layout' or 'default_host'?"
+            ));
+            continue;
+        }
+
+        // Project entry: layout[:path][@host]
+        let before_host = value.rsplit_once('@').map_or(value, |(b, _)| b);
+        let layout_str = before_host.split_once(':').map_or(before_host, |(l, _)| l);
+        if !known_layouts.contains(&layout_str) {
+            warnings.push(format!(
+                "config: unknown layout '{layout_str}' for project '{key}' (known: default, claude)"
+            ));
+        }
+    }
+
+    warnings
+}
+
 /// Parse config from a string (testable, no I/O).
 ///
 /// Format: `key=layout[:path][@host]`
@@ -240,5 +298,60 @@ remote=default@server1
         assert_eq!(config.projects.len(), 3);
         assert_eq!(config.projects["chops"].layout, Layout::Claude);
         assert_eq!(config.projects["remote"].host.as_deref(), Some("server1"));
+    }
+
+    #[test]
+    fn validate_clean_config() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            "default_layout=claude\ndefault_host=pop-mini\nmyproj=claude\n"
+        )
+        .unwrap();
+        let warnings = validate_config(f.path());
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings, got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn validate_unknown_layout_value() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "default_layout=fancy").unwrap();
+        let warnings = validate_config(f.path());
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("unknown layout 'fancy'")));
+    }
+
+    #[test]
+    fn validate_typo_of_default_key() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "default_layot=claude").unwrap();
+        let warnings = validate_config(f.path());
+        assert!(warnings.iter().any(|w| w.contains("default_layot")));
+    }
+
+    #[test]
+    fn validate_missing_file_is_clean() {
+        let p = std::path::Path::new("/tmp/dev-config-does-not-exist-xyz");
+        let warnings = validate_config(p);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_unknown_project_layout() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "myproject=badlayout").unwrap();
+        let warnings = validate_config(f.path());
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("unknown layout 'badlayout'")));
     }
 }
