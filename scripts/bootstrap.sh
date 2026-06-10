@@ -242,6 +242,9 @@ case "$ROLE" in
   host)
     is_termux && die "host role is not supported on Termux — a phone is a client"
     command -v systemctl >/dev/null 2>&1 || die "host role needs systemd --user"
+    command -v tmux >/dev/null 2>&1 || die "host role needs tmux on PATH"
+    TMUX_DIR="$(dirname "$(command -v tmux)")"
+    UNIT_PATH="${BIN_DIR}:${TMUX_DIR}:/usr/local/bin:/usr/bin:/bin"
     UNIT_DIR="$HOME/.config/systemd/user"
     mkdir -p "$UNIT_DIR"
     cat >"$UNIT_DIR/dev-daemon.service" <<EOF
@@ -255,7 +258,7 @@ Type=simple
 ExecStart=${BIN_DIR}/dev daemon
 Restart=on-failure
 RestartSec=2
-Environment=PATH=${BIN_DIR}:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=${UNIT_PATH}
 
 [Install]
 WantedBy=default.target
