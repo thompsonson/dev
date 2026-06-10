@@ -70,6 +70,8 @@ pub struct ProjectEntry {
     pub layout: Layout,
     pub custom_path: Option<PathBuf>,
     pub host: Option<String>,
+    /// Parsed now to establish the ADR 002 domain model; consumed by the
+    /// URI/worktree work in #59/#60, not by the current project-only runtime.
     pub worktrees: HashMap<String, WorktreeEntry>,
 }
 
@@ -108,6 +110,11 @@ impl Default for DevConfig {
 }
 
 impl DevConfig {
+    /// Build a domain config from already-effective entries.
+    ///
+    /// Prefer `from_raw`/`from_toml_str` for real config loading; this
+    /// constructor is for tests and manual construction where project entries
+    /// have already had defaults folded in.
     pub fn new(
         default_layout: Layout,
         default_host: Option<String>,
