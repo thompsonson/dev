@@ -9,19 +9,60 @@ on:
       - '**/Cargo.lock'
       - '.release-please-manifest.json'
   pull_request:
-    paths:
-      - '**/*.rs'
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - '.release-please-manifest.json'
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  version-guard:
+  changes:
+    name: changed files
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.detect.outputs.rust }}
+      docs: ${{ steps.detect.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect relevant file groups
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            files="$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD)"
+          else
+            files="$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}")"
+          fi
+
+          rust=false
+          docs=false
+
+          while IFS= read -r file; do
+            [[ -n "$file" ]] || continue
+            case "$file" in
+              *.rs|Cargo.toml|*/Cargo.toml|Cargo.lock|*/Cargo.lock|.release-please-manifest.json)
+                rust=true
+                ;;
+            esac
+            case "$file" in
+              *.md|docs/*)
+                docs=true
+                ;;
+            esac
+          done <<< "$files"
+
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "docs=$docs" >> "$GITHUB_OUTPUT"
+
+  version_guard:
     name: version consistency
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -38,6 +79,8 @@ jobs:
 
   test:
     name: test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -62,3 +105,56 @@ jobs:
 
       - name: cargo test
         run: cargo test --all
+
+  docs:
+    name: docs
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check docs diff whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            git diff --check "origin/${{ github.base_ref }}"...HEAD -- '*.md' docs
+          else
+            git diff --check "${{ github.event.before }}" "${{ github.sha }}" -- '*.md' docs
+          fi
+
+  ci:
+    name: ci
+    needs: [changes, version_guard, test, docs]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate required gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          failed=false
+          for result in \
+            "${{ needs.changes.result }}" \
+            "${{ needs.version_guard.result }}" \
+            "${{ needs.test.result }}" \
+            "${{ needs.docs.result }}"; do
+            case "$result" in
+              failure|cancelled)
+                failed=true
+                ;;
+            esac
+          done
+
+          if [[ "$failed" == "true" ]]; then
+            echo "One or more relevant CI jobs failed or were cancelled."
+            exit 1
+          fi
+
+          echo "Relevant CI jobs passed or were intentionally skipped."
