@@ -47,7 +47,7 @@ pub fn discover_projects(base: &Path, config: &DevConfig) -> Vec<DiscoveredProje
         .collect();
 
     // Append custom-path entries from config that aren't already discovered
-    for (key, entry) in &config.projects {
+    for (key, entry) in config.projects() {
         if let Some(ref custom_path) = entry.custom_path {
             if custom_path.is_dir() && !projects.iter().any(|p| p.display_name == *key) {
                 projects.push(DiscoveredProject {
@@ -164,14 +164,20 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_projects(&tmp, &["alpha"]);
         let custom = TempDir::new().unwrap();
-        let mut config = DevConfig::default();
-        config.projects.insert(
-            "dotfiles".to_string(),
-            ProjectEntry {
-                layout: Layout::Claude,
-                custom_path: Some(custom.path().to_path_buf()),
-                host: None,
-            },
+        let config = DevConfig::new(
+            Layout::Default,
+            None,
+            [(
+                "dotfiles".to_string(),
+                ProjectEntry {
+                    layout: Layout::Claude,
+                    custom_path: Some(custom.path().to_path_buf()),
+                    host: None,
+                    worktrees: std::collections::HashMap::new(),
+                },
+            )]
+            .into_iter()
+            .collect(),
         );
         let projects = discover_projects(tmp.path(), &config);
         assert_eq!(projects.len(), 2);
