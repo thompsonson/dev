@@ -104,11 +104,10 @@ impl DevManager {
             {
                 let layout = self
                     .config
-                    .projects
-                    .get(&p.display_name)
-                    .or_else(|| self.config.projects.get(basename))
+                    .project(&p.display_name)
+                    .or_else(|| self.config.project(basename))
                     .map(|e| e.layout.to_string())
-                    .unwrap_or_else(|| self.config.default_layout.to_string());
+                    .unwrap_or_else(|| self.config.default_layout().to_string());
 
                 let host = match self.resolve_target(&p.display_name) {
                     Target::Remote(h) => Some(h),
@@ -125,7 +124,7 @@ impl DevManager {
         }
 
         // Add config-only remote projects not found locally and without sessions.
-        for (key, entry) in &self.config.projects {
+        for (key, entry) in self.config.projects() {
             if let Some(ref host) = entry.host {
                 if host != &self.local_hostname
                     && !session_names.contains(&key.as_str())
@@ -173,11 +172,10 @@ impl DevManager {
 
         let layout = layout.unwrap_or_else(|| {
             self.config
-                .projects
-                .get(project)
-                .or_else(|| self.config.projects.get(&session_name))
+                .project(project)
+                .or_else(|| self.config.project(&session_name))
                 .map(|e| e.layout.clone())
-                .unwrap_or_else(|| self.config.default_layout.clone())
+                .unwrap_or_else(|| self.config.default_layout().clone())
         });
 
         self.tmux
@@ -195,7 +193,7 @@ impl DevManager {
 
     /// Open a project: resolve, create if needed, return info for CLI to attach.
     pub fn open(&self, query: &str, force_layout: Option<Layout>) -> Result<OpenResult> {
-        // Check for remote forwarding (per-project host or default_host fallback).
+        // Check for remote forwarding (per-project host or defaults.host fallback).
         if let Target::Remote(host) = self.resolve_target(query) {
             return Ok(OpenResult {
                 session_name: query.to_string(),
@@ -220,8 +218,11 @@ impl DevManager {
                 // Use config key for custom-path projects, basename otherwise
                 let name = if p.full_path != self.projects_dir.join(&p.display_name) {
                     // Check if this is a custom-path project (key in config)
-                    if self.config.projects.contains_key(&p.display_name)
-                        && self.config.projects[&p.display_name].custom_path.is_some()
+                    if self
+                        .config
+                        .project(&p.display_name)
+                        .and_then(|entry| entry.custom_path.as_ref())
+                        .is_some()
                     {
                         p.display_name.clone()
                     } else {
@@ -266,11 +267,10 @@ impl DevManager {
 
         let layout = force_layout.unwrap_or_else(|| {
             self.config
-                .projects
-                .get(query)
-                .or_else(|| self.config.projects.get(&session_name))
+                .project(query)
+                .or_else(|| self.config.project(&session_name))
                 .map(|e| e.layout.clone())
-                .unwrap_or_else(|| self.config.default_layout.clone())
+                .unwrap_or_else(|| self.config.default_layout().clone())
         });
 
         self.tmux
@@ -293,15 +293,14 @@ impl DevManager {
     }
 
     /// Resolve where a project's session runs: locally or on a remote host.
-    /// Per-project `@host` takes precedence over `default_host`. Returns
+    /// Per-project host takes precedence over defaults.host. Returns
     /// `Target::Local` when the resolved host matches the local machine.
     pub fn resolve_target(&self, project: &str) -> Target {
         let host = self
             .config
-            .projects
-            .get(project)
+            .project(project)
             .and_then(|e| e.host.clone())
-            .or_else(|| self.config.default_host.clone());
+            .or_else(|| self.config.default_host().map(ToOwned::to_owned));
         match host {
             Some(h) if h != self.local_hostname => Target::Remote(h),
             _ => Target::Local,
@@ -309,10 +308,10 @@ impl DevManager {
     }
 
     /// Returns the host that global commands (list, picker, kill-all) should
-    /// be forwarded to. `Some(host)` when `default_host` is configured and
+    /// be forwarded to. `Some(host)` when defaults.host is configured and
     /// resolves to a different machine; `None` on the host itself.
     pub fn remote_host(&self) -> Option<String> {
-        let host = self.config.default_host.clone()?;
+        let host = self.config.default_host()?.to_string();
         if host == self.local_hostname {
             None
         } else {
@@ -413,14 +412,20 @@ mod tests {
     #[test]
     fn resolve_target_explicit_host_is_remote() {
         use crate::config::{DevConfig, Layout, ProjectEntry};
-        let mut config = DevConfig::default();
-        config.projects.insert(
-            "myproject".to_string(),
-            ProjectEntry {
-                layout: Layout::Default,
-                custom_path: None,
-                host: Some("remotehost".to_string()),
-            },
+        let config = DevConfig::new(
+            Layout::Default,
+            None,
+            [(
+                "myproject".to_string(),
+                ProjectEntry {
+                    layout: Layout::Default,
+                    custom_path: None,
+                    host: Some("remotehost".to_string()),
+                    worktrees: std::collections::HashMap::new(),
+                },
+            )]
+            .into_iter()
+            .collect(),
         );
         let mgr = DevManager {
             config,
@@ -438,14 +443,20 @@ mod tests {
     #[test]
     fn resolve_target_local_host_is_local() {
         use crate::config::{DevConfig, Layout, ProjectEntry};
-        let mut config = DevConfig::default();
-        config.projects.insert(
-            "myproject".to_string(),
-            ProjectEntry {
-                layout: Layout::Default,
-                custom_path: None,
-                host: Some("thisbox".to_string()),
-            },
+        let config = DevConfig::new(
+            Layout::Default,
+            None,
+            [(
+                "myproject".to_string(),
+                ProjectEntry {
+                    layout: Layout::Default,
+                    custom_path: None,
+                    host: Some("thisbox".to_string()),
+                    worktrees: std::collections::HashMap::new(),
+                },
+            )]
+            .into_iter()
+            .collect(),
         );
         let mgr = DevManager {
             config,
@@ -459,10 +470,11 @@ mod tests {
 
     #[test]
     fn resolve_target_default_host_fallback() {
-        let config = DevConfig {
-            default_host: Some("pop-mini".to_string()),
-            ..DevConfig::default()
-        };
+        let config = DevConfig::new(
+            Layout::Default,
+            Some("pop-mini".to_string()),
+            Default::default(),
+        );
         let mgr = DevManager {
             config,
             projects: Vec::new(),
@@ -478,10 +490,11 @@ mod tests {
 
     #[test]
     fn resolve_target_default_host_local_is_local() {
-        let config = DevConfig {
-            default_host: Some("pop-mini".to_string()),
-            ..DevConfig::default()
-        };
+        let config = DevConfig::new(
+            Layout::Default,
+            Some("pop-mini".to_string()),
+            Default::default(),
+        );
         let mgr = DevManager {
             config,
             projects: Vec::new(),
@@ -499,14 +512,20 @@ mod tests {
         use crate::config::{DevConfig, Layout, ProjectEntry};
         use crate::discovery::DiscoveredProject;
 
-        let mut config = DevConfig::default();
-        config.projects.insert(
-            "myproject".to_string(),
-            ProjectEntry {
-                layout: Layout::Default,
-                custom_path: None,
-                host: Some("remotehost".to_string()),
-            },
+        let config = DevConfig::new(
+            Layout::Default,
+            None,
+            [(
+                "myproject".to_string(),
+                ProjectEntry {
+                    layout: Layout::Default,
+                    custom_path: None,
+                    host: Some("remotehost".to_string()),
+                    worktrees: std::collections::HashMap::new(),
+                },
+            )]
+            .into_iter()
+            .collect(),
         );
         let mock = MockTmux::new();
         let mgr = DevManager {

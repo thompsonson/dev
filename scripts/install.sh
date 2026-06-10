@@ -7,8 +7,8 @@
 #             This is your always-on box (e.g. pop-mini).
 #
 #   client  — this machine drives sessions on a host over SSH.
-#             Installs the binary and records `default_host=HOST` in
-#             ~/.config/dev/config so `dev <project>` targets that host.
+#             Installs the binary and records `defaults.host = "HOST"` in
+#             ~/.config/dev/config.toml so `dev <project>` targets that host.
 #             Use this on your laptop and phone (Termux).
 #
 # With no role flag it just installs the binary (back-compat).
@@ -25,7 +25,7 @@
 # Flags:
 #   --host          Install + enable the dev-daemon.service user unit
 #                   (Linux only; requires systemctl --user).
-#   --client HOST   Client role: write default_host=HOST, no daemon.
+#   --client HOST   Client role: write defaults.host=HOST, no daemon.
 #   --systemd       Deprecated alias for --host.
 #   --uninstall     Remove the binary and, if present, the systemd unit.
 #
@@ -85,7 +85,7 @@ BIN_PATH="${BIN_DIR}/dev"
 UNIT_DIR="${HOME}/.config/systemd/user"
 UNIT_PATH="${UNIT_DIR}/dev-daemon.service"
 CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/dev"
-CONFIG_FILE="${CONFIG_DIR}/config"
+CONFIG_FILE="${CONFIG_DIR}/config.toml"
 
 log() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!! \033[0m %s\n' "$*" >&2; }
@@ -159,20 +159,32 @@ install_binary() {
   esac
 }
 
-# Idempotently set `key=value` in the dev config (INI-style, one per line).
-set_config_key() {
-  local key="$1" val="$2"
+# Idempotently set `[defaults].host` in the dev TOML config.
+set_default_host() {
+  local val="$1"
   mkdir -p "$CONFIG_DIR"
-  touch "$CONFIG_FILE"
-  if grep -qE "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    printf '[defaults]\nhost = "%s"\n' "$val" >"$CONFIG_FILE"
+  else
     local tmp
     tmp="$(mktemp)"
-    sed "s|^${key}=.*|${key}=${val}|" "$CONFIG_FILE" >"$tmp"
+    awk -v val="$val" '
+      BEGIN { in_defaults=0; saw_defaults=0; set_host=0 }
+      /^\[defaults\][[:space:]]*$/ { in_defaults=1; saw_defaults=1; print; next }
+      /^\[.*\][[:space:]]*$/ {
+        if (in_defaults && !set_host) { print "host = \"" val "\""; set_host=1 }
+        in_defaults=0; print; next
+      }
+      in_defaults && /^[[:space:]]*host[[:space:]]*=/ { print "host = \"" val "\""; set_host=1; next }
+      { print }
+      END {
+        if (!saw_defaults) { print ""; print "[defaults]"; print "host = \"" val "\"" }
+        else if (in_defaults && !set_host) { print "host = \"" val "\"" }
+      }
+    ' "$CONFIG_FILE" >"$tmp"
     mv "$tmp" "$CONFIG_FILE"
-  else
-    printf '%s=%s\n' "$key" "$val" >>"$CONFIG_FILE"
   fi
-  log "Set ${key}=${val} in $CONFIG_FILE"
+  log "Set defaults.host=${val} in $CONFIG_FILE"
 }
 
 install_systemd_unit() {
@@ -216,7 +228,7 @@ case "$ROLE" in
     echo "    journalctl --user -u dev-daemon.service -f"
     ;;
   client)
-    set_config_key "default_host" "$CLIENT_HOST"
+    set_default_host "$CLIENT_HOST"
     log "Client ready. 'dev <project>' will target ${CLIENT_HOST} over SSH."
     echo "Check reachability:  ssh ${CLIENT_HOST} true"
     ;;

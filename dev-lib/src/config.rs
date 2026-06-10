@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 /// Supported tmux layouts.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -29,23 +29,68 @@ impl std::fmt::Display for Layout {
     }
 }
 
-/// A per-project configuration entry.
+/// Raw TOML config. Mirrors `~/.config/dev/config.toml` exactly.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct RawDevConfig {
+    #[serde(default)]
+    pub defaults: RawDefaults,
+    #[serde(default)]
+    pub project: HashMap<String, RawProjectEntry>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct RawDefaults {
+    pub layout: Option<Layout>,
+    pub host: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct RawProjectEntry {
+    pub layout: Option<Layout>,
+    pub path: Option<PathBuf>,
+    pub host: Option<String>,
+    #[serde(default)]
+    pub worktree: HashMap<String, RawWorktreeEntry>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct RawWorktreeEntry {
+    pub layout: Option<Layout>,
+    pub path: Option<PathBuf>,
+    pub host: Option<String>,
+}
+
+/// A domain project config entry. Values are effective for the main worktree.
 #[derive(Debug, Clone)]
 pub struct ProjectEntry {
     pub layout: Layout,
     pub custom_path: Option<PathBuf>,
     pub host: Option<String>,
+    pub worktrees: HashMap<String, WorktreeEntry>,
 }
 
-/// Parsed dev configuration.
+/// A domain worktree config entry. Values are effective after inheritance.
+#[derive(Debug, Clone)]
+pub struct WorktreeEntry {
+    pub layout: Layout,
+    pub custom_path: Option<PathBuf>,
+    pub host: Option<String>,
+}
+
+/// Effective config for a concrete project/worktree session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSessionConfig {
+    pub layout: Layout,
+    pub host: Option<String>,
+    pub custom_path: Option<PathBuf>,
+}
+
+/// Domain config consumed by application code.
 #[derive(Debug, Clone)]
 pub struct DevConfig {
-    pub default_layout: Layout,
-    /// Host to forward to when no per-project host is set. Written by
-    /// `bootstrap.sh --client HOST`; used so bare `dev` on a thin client
-    /// transparently attaches to sessions on the always-on host.
-    pub default_host: Option<String>,
-    pub projects: HashMap<String, ProjectEntry>,
+    default_layout: Layout,
+    default_host: Option<String>,
+    projects: HashMap<String, ProjectEntry>,
 }
 
 impl Default for DevConfig {
@@ -54,6 +99,123 @@ impl Default for DevConfig {
             default_layout: Layout::Default,
             default_host: None,
             projects: HashMap::new(),
+        }
+    }
+}
+
+impl DevConfig {
+    pub fn new(
+        default_layout: Layout,
+        default_host: Option<String>,
+        projects: HashMap<String, ProjectEntry>,
+    ) -> Self {
+        Self {
+            default_layout,
+            default_host,
+            projects,
+        }
+    }
+
+    pub fn from_raw(raw: RawDevConfig, home: &Path) -> Self {
+        let default_layout = raw.defaults.layout.unwrap_or(Layout::Default);
+        let default_host = raw.defaults.host;
+        let mut projects = HashMap::new();
+
+        for (name, raw_project) in raw.project {
+            let project_layout = raw_project
+                .layout
+                .clone()
+                .unwrap_or_else(|| default_layout.clone());
+            let project_host = raw_project.host.clone().or_else(|| default_host.clone());
+            let project_path = raw_project.path.map(|p| expand_home(p, home));
+            let mut worktrees = HashMap::new();
+
+            for (worktree_name, raw_worktree) in raw_project.worktree {
+                worktrees.insert(
+                    worktree_name,
+                    WorktreeEntry {
+                        layout: raw_worktree
+                            .layout
+                            .unwrap_or_else(|| project_layout.clone()),
+                        custom_path: raw_worktree.path.map(|p| expand_home(p, home)),
+                        host: raw_worktree.host.or_else(|| project_host.clone()),
+                    },
+                );
+            }
+
+            projects.insert(
+                name,
+                ProjectEntry {
+                    layout: project_layout,
+                    custom_path: project_path,
+                    host: project_host,
+                    worktrees,
+                },
+            );
+        }
+
+        Self {
+            default_layout,
+            default_host,
+            projects,
+        }
+    }
+
+    pub fn from_toml_str(content: &str, home: &Path) -> Result<Self> {
+        let raw: RawDevConfig = toml::from_str(content).context("parse TOML config")?;
+        Ok(Self::from_raw(raw, home))
+    }
+
+    pub fn default_layout(&self) -> &Layout {
+        &self.default_layout
+    }
+
+    pub fn default_host(&self) -> Option<&str> {
+        self.default_host.as_deref()
+    }
+
+    pub fn projects(&self) -> &HashMap<String, ProjectEntry> {
+        &self.projects
+    }
+
+    pub fn project(&self, name: &str) -> Option<&ProjectEntry> {
+        self.projects.get(name)
+    }
+
+    pub fn effective_project_config(&self, project: &str) -> ResolvedSessionConfig {
+        match self.projects.get(project) {
+            Some(entry) => ResolvedSessionConfig {
+                layout: entry.layout.clone(),
+                host: entry.host.clone(),
+                custom_path: entry.custom_path.clone(),
+            },
+            None => ResolvedSessionConfig {
+                layout: self.default_layout.clone(),
+                host: self.default_host.clone(),
+                custom_path: None,
+            },
+        }
+    }
+
+    pub fn effective_session_config(
+        &self,
+        project: &str,
+        worktree: Option<&str>,
+    ) -> ResolvedSessionConfig {
+        let project_config = self.effective_project_config(project);
+        let Some(worktree) = worktree else {
+            return project_config;
+        };
+        let Some(entry) = self.projects.get(project) else {
+            return project_config;
+        };
+        let Some(worktree_entry) = entry.worktrees.get(worktree) else {
+            return project_config;
+        };
+        ResolvedSessionConfig {
+            layout: worktree_entry.layout.clone(),
+            host: worktree_entry.host.clone(),
+            custom_path: worktree_entry.custom_path.clone(),
         }
     }
 }
@@ -67,8 +229,15 @@ pub fn parse_layout(s: &str) -> Result<Layout> {
     }
 }
 
-/// Default config file path.
+/// Default TOML config file path.
 pub fn config_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".config/dev/config.toml")
+}
+
+/// Legacy INI config file path.
+pub fn legacy_config_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
         .join(".config/dev/config")
@@ -83,124 +252,49 @@ pub fn validate_config(path: &Path) -> Vec<String> {
         Err(e) => return vec![format!("config: cannot read file: {e}")],
     };
 
-    let known_layouts = ["default", "claude"];
-    let mut warnings = Vec::new();
-
-    for (i, line) in content.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            warnings.push(format!("config line {}: missing '=' separator", i + 1));
-            continue;
-        };
-        let key = key.trim();
-        let value = value.trim();
-
-        if key == "default_layout" {
-            if !known_layouts.contains(&value) {
-                warnings.push(format!(
-                    "config: unknown layout '{value}' for default_layout (known: default, claude)"
-                ));
-            }
-            continue;
-        }
-
-        if key == "default_host" {
-            continue;
-        }
-
-        // Warn on keys that look like typos of the two special keys.
-        if key.starts_with("default_") {
-            warnings.push(format!(
-                "config: unknown key '{key}' — did you mean 'default_layout' or 'default_host'?"
-            ));
-            continue;
-        }
-
-        // Project entry: layout[:path][@host]
-        let before_host = value.rsplit_once('@').map_or(value, |(b, _)| b);
-        let layout_str = before_host.split_once(':').map_or(before_host, |(l, _)| l);
-        if !known_layouts.contains(&layout_str) {
-            warnings.push(format!(
-                "config: unknown layout '{layout_str}' for project '{key}' (known: default, claude)"
-            ));
-        }
+    match toml::from_str::<RawDevConfig>(&content) {
+        Ok(_) => Vec::new(),
+        Err(e) => vec![format!("config: TOML parse error: {e}")],
     }
-
-    warnings
-}
-
-/// Parse config from a string (testable, no I/O).
-///
-/// Format: `key=layout[:path][@host]`
-/// Special key: `default_layout=<layout>`
-pub fn parse_config_str(content: &str, home: &Path) -> DevConfig {
-    let mut config = DevConfig::default();
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let value = value.trim();
-
-        if key == "default_layout" {
-            config.default_layout = Layout::parse(value);
-            continue;
-        }
-        if key == "default_host" {
-            config.default_host = Some(value.to_string());
-            continue;
-        }
-
-        // Parse value: layout[:path][@host]
-        // First split off @host if present
-        let (before_host, host) = match value.rsplit_once('@') {
-            Some((before, host)) => (before, Some(host.to_string())),
-            None => (value, None),
-        };
-
-        // Then split off :path if present
-        let (layout_str, custom_path) = match before_host.split_once(':') {
-            Some((layout, path)) => {
-                let expanded = if path.starts_with('~') {
-                    home.join(path.trim_start_matches("~/"))
-                } else {
-                    PathBuf::from(path)
-                };
-                (layout, Some(expanded))
-            }
-            None => (before_host, None),
-        };
-
-        config.projects.insert(
-            key.to_string(),
-            ProjectEntry {
-                layout: Layout::parse(layout_str),
-                custom_path,
-                host,
-            },
-        );
-    }
-
-    config
 }
 
 /// Parse config from the file at the given path.
 pub fn parse_config(path: &Path) -> Result<DevConfig> {
     let home = dirs::home_dir().unwrap_or_default();
     if !path.exists() {
+        let legacy = legacy_path_for(path);
+        if legacy.exists() {
+            anyhow::bail!(
+                "legacy config found at {}; migrate it to TOML at {}",
+                legacy.display(),
+                path.display()
+            );
+        }
         return Ok(DevConfig::default());
     }
     let content = std::fs::read_to_string(path)?;
-    Ok(parse_config_str(&content, &home))
+    DevConfig::from_toml_str(&content, &home)
+}
+
+fn legacy_path_for(path: &Path) -> PathBuf {
+    if path.file_name().and_then(|n| n.to_str()) == Some("config.toml") {
+        path.with_file_name("config")
+    } else {
+        legacy_config_path()
+    }
+}
+
+fn expand_home(path: PathBuf, home: &Path) -> PathBuf {
+    let Some(s) = path.to_str() else {
+        return path;
+    };
+    if s == "~" {
+        return home.to_path_buf();
+    }
+    if let Some(rest) = s.strip_prefix("~/") {
+        return home.join(rest);
+    }
+    path
 }
 
 #[cfg(test)]
@@ -212,101 +306,131 @@ mod tests {
     }
 
     #[test]
-    fn empty_config() {
-        let config = parse_config_str("", &home());
-        assert_eq!(config.default_layout, Layout::Default);
-        assert!(config.projects.is_empty());
+    fn empty_config_uses_domain_defaults() {
+        let config = DevConfig::from_toml_str("", &home()).unwrap();
+        assert_eq!(config.default_layout(), &Layout::Default);
+        assert_eq!(config.default_host(), None);
+        assert!(config.projects().is_empty());
     }
 
     #[test]
-    fn comments_and_blank_lines() {
-        let config = parse_config_str("# comment\n\n  # another\n", &home());
-        assert!(config.projects.is_empty());
+    fn parses_defaults_table() {
+        let config = DevConfig::from_toml_str(
+            r#"
+            [defaults]
+            layout = "claude"
+            host = "pop-mini"
+            "#,
+            &home(),
+        )
+        .unwrap();
+        assert_eq!(config.default_layout(), &Layout::Claude);
+        assert_eq!(config.default_host(), Some("pop-mini"));
     }
 
     #[test]
-    fn default_layout() {
-        let config = parse_config_str("default_layout=claude", &home());
-        assert_eq!(config.default_layout, Layout::Claude);
+    fn project_inherits_defaults() {
+        let config = DevConfig::from_toml_str(
+            r#"
+            [defaults]
+            layout = "claude"
+            host = "pop-mini"
+
+            [project.atomicguard]
+            "#,
+            &home(),
+        )
+        .unwrap();
+        let resolved = config.effective_project_config("atomicguard");
+        assert_eq!(resolved.layout, Layout::Claude);
+        assert_eq!(resolved.host.as_deref(), Some("pop-mini"));
     }
 
     #[test]
-    fn default_host() {
-        let config = parse_config_str("default_host=pop-mini", &home());
-        assert_eq!(config.default_host.as_deref(), Some("pop-mini"));
-    }
+    fn project_overrides_defaults_and_expands_path() {
+        let config = DevConfig::from_toml_str(
+            r#"
+            [defaults]
+            layout = "default"
+            host = "pop-mini"
 
-    #[test]
-    fn default_host_with_other_keys() {
-        let input = "default_layout=claude\ndefault_host=pop-mini\nmyproject=default\n";
-        let config = parse_config_str(input, &home());
-        assert_eq!(config.default_host.as_deref(), Some("pop-mini"));
-        assert_eq!(config.default_layout, Layout::Claude);
-        assert!(config.projects.contains_key("myproject"));
-    }
-
-    #[test]
-    fn simple_project() {
-        let config = parse_config_str("myproject=claude", &home());
-        let entry = &config.projects["myproject"];
-        assert_eq!(entry.layout, Layout::Claude);
-        assert!(entry.custom_path.is_none());
-        assert!(entry.host.is_none());
-    }
-
-    #[test]
-    fn project_with_host() {
-        let config = parse_config_str("myproject=claude@myserver", &home());
-        let entry = &config.projects["myproject"];
-        assert_eq!(entry.layout, Layout::Claude);
-        assert!(entry.custom_path.is_none());
-        assert_eq!(entry.host.as_deref(), Some("myserver"));
-    }
-
-    #[test]
-    fn project_with_path() {
-        let config = parse_config_str("dotfiles=claude:~/.local/share/chezmoi", &home());
-        let entry = &config.projects["dotfiles"];
-        assert_eq!(entry.layout, Layout::Claude);
+            [project.dotfiles]
+            layout = "claude"
+            host = "laptop"
+            path = "~/.local/share/chezmoi"
+            "#,
+            &home(),
+        )
+        .unwrap();
+        let resolved = config.effective_project_config("dotfiles");
+        assert_eq!(resolved.layout, Layout::Claude);
+        assert_eq!(resolved.host.as_deref(), Some("laptop"));
         assert_eq!(
-            entry.custom_path.as_deref(),
+            resolved.custom_path.as_deref(),
             Some(Path::new("/home/testuser/.local/share/chezmoi"))
         );
-        assert!(entry.host.is_none());
     }
 
     #[test]
-    fn project_with_path_and_host() {
-        let config = parse_config_str("proj=default:/opt/proj@remotehost", &home());
-        let entry = &config.projects["proj"];
-        assert_eq!(entry.layout, Layout::Default);
-        assert_eq!(entry.custom_path.as_deref(), Some(Path::new("/opt/proj")));
-        assert_eq!(entry.host.as_deref(), Some("remotehost"));
+    fn worktree_inherits_from_project_then_overrides_specific_fields() {
+        let config = DevConfig::from_toml_str(
+            r#"
+            [defaults]
+            layout = "default"
+            host = "pop-mini"
+
+            [project.atomicguard]
+            layout = "claude"
+
+            [project.atomicguard.worktree.fix-guards]
+            layout = "default"
+            path = "~/Projects/atomicguard.worktrees/fix-guards"
+            "#,
+            &home(),
+        )
+        .unwrap();
+        let resolved = config.effective_session_config("atomicguard", Some("fix-guards"));
+        assert_eq!(resolved.layout, Layout::Default);
+        assert_eq!(resolved.host.as_deref(), Some("pop-mini"));
+        assert_eq!(
+            resolved.custom_path.as_deref(),
+            Some(Path::new(
+                "/home/testuser/Projects/atomicguard.worktrees/fix-guards"
+            ))
+        );
     }
 
     #[test]
-    fn multiple_entries() {
-        let input = "\
-default_layout=default
-# projects
-chops=claude
-dotfiles=claude:~/.local/share/chezmoi
-remote=default@server1
-";
-        let config = parse_config_str(input, &home());
-        assert_eq!(config.default_layout, Layout::Default);
-        assert_eq!(config.projects.len(), 3);
-        assert_eq!(config.projects["chops"].layout, Layout::Claude);
-        assert_eq!(config.projects["remote"].host.as_deref(), Some("server1"));
+    fn unknown_project_uses_defaults() {
+        let config = DevConfig::from_toml_str(
+            r#"
+            [defaults]
+            layout = "claude"
+            host = "pop-mini"
+            "#,
+            &home(),
+        )
+        .unwrap();
+        let resolved = config.effective_project_config("missing");
+        assert_eq!(resolved.layout, Layout::Claude);
+        assert_eq!(resolved.host.as_deref(), Some("pop-mini"));
+        assert!(resolved.custom_path.is_none());
     }
 
     #[test]
-    fn validate_clean_config() {
+    fn validate_clean_toml_config() {
         use std::io::Write;
         let mut f = tempfile::NamedTempFile::new().unwrap();
         write!(
             f,
-            "default_layout=claude\ndefault_host=pop-mini\nmyproj=claude\n"
+            r#"
+            [defaults]
+            layout = "claude"
+            host = "pop-mini"
+
+            [project.myproj]
+            layout = "default"
+            "#
         )
         .unwrap();
         let warnings = validate_config(f.path());
@@ -321,37 +445,33 @@ remote=default@server1
     fn validate_unknown_layout_value() {
         use std::io::Write;
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        writeln!(f, "default_layout=fancy").unwrap();
+        writeln!(f, "[defaults]\nlayout = \"fancy\"").unwrap();
         let warnings = validate_config(f.path());
-        assert!(warnings
-            .iter()
-            .any(|w| w.contains("unknown layout 'fancy'")));
-    }
-
-    #[test]
-    fn validate_typo_of_default_key() {
-        use std::io::Write;
-        let mut f = tempfile::NamedTempFile::new().unwrap();
-        writeln!(f, "default_layot=claude").unwrap();
-        let warnings = validate_config(f.path());
-        assert!(warnings.iter().any(|w| w.contains("default_layot")));
+        assert!(warnings.iter().any(|w| w.contains("unknown variant")));
     }
 
     #[test]
     fn validate_missing_file_is_clean() {
-        let p = std::path::Path::new("/tmp/dev-config-does-not-exist-xyz");
+        let p = std::path::Path::new("/tmp/dev-config-does-not-exist-xyz.toml");
         let warnings = validate_config(p);
         assert!(warnings.is_empty());
     }
 
     #[test]
-    fn validate_unknown_project_layout() {
-        use std::io::Write;
-        let mut f = tempfile::NamedTempFile::new().unwrap();
-        writeln!(f, "myproject=badlayout").unwrap();
-        let warnings = validate_config(f.path());
-        assert!(warnings
-            .iter()
-            .any(|w| w.contains("unknown layout 'badlayout'")));
+    fn parse_config_errors_when_legacy_ini_exists_without_toml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let toml_path = tmp.path().join("config.toml");
+        std::fs::write(tmp.path().join("config"), "default_layout=claude\n").unwrap();
+
+        let err = parse_config(&toml_path).unwrap_err().to_string();
+        assert!(err.contains("legacy config found"));
+        assert!(err.contains("config.toml"));
+    }
+
+    #[test]
+    fn parse_layout_known() {
+        assert_eq!(parse_layout("default").unwrap(), Layout::Default);
+        assert_eq!(parse_layout("claude").unwrap(), Layout::Claude);
+        assert!(parse_layout("weird").is_err());
     }
 }
