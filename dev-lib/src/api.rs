@@ -102,12 +102,10 @@ impl DevManager {
             if !session_names.contains(&basename)
                 && !session_names.contains(&p.display_name.as_str())
             {
-                let layout = self
+                let project_config = self
                     .config
-                    .project(&p.display_name)
-                    .or_else(|| self.config.project(basename))
-                    .map(|e| e.layout.to_string())
-                    .unwrap_or_else(|| self.config.default_layout().to_string());
+                    .effective_project_config_with_fallback(&p.display_name, basename);
+                let layout = project_config.layout.to_string();
 
                 let host = match self.resolve_target(&p.display_name) {
                     Target::Remote(h) => Some(h),
@@ -172,10 +170,8 @@ impl DevManager {
 
         let layout = layout.unwrap_or_else(|| {
             self.config
-                .project(project)
-                .or_else(|| self.config.project(&session_name))
-                .map(|e| e.layout.clone())
-                .unwrap_or_else(|| self.config.default_layout().clone())
+                .effective_project_config_with_fallback(project, &session_name)
+                .layout
         });
 
         self.tmux
@@ -267,10 +263,8 @@ impl DevManager {
 
         let layout = force_layout.unwrap_or_else(|| {
             self.config
-                .project(query)
-                .or_else(|| self.config.project(&session_name))
-                .map(|e| e.layout.clone())
-                .unwrap_or_else(|| self.config.default_layout().clone())
+                .effective_project_config_with_fallback(query, &session_name)
+                .layout
         });
 
         self.tmux
@@ -296,11 +290,7 @@ impl DevManager {
     /// Per-project host takes precedence over defaults.host. Returns
     /// `Target::Local` when the resolved host matches the local machine.
     pub fn resolve_target(&self, project: &str) -> Target {
-        let host = self
-            .config
-            .project(project)
-            .and_then(|e| e.host.clone())
-            .or_else(|| self.config.default_host().map(ToOwned::to_owned));
+        let host = self.config.effective_project_config(project).host;
         match host {
             Some(h) if h != self.local_hostname => Target::Remote(h),
             _ => Target::Local,

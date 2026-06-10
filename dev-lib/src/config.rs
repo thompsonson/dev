@@ -31,6 +31,7 @@ impl std::fmt::Display for Layout {
 
 /// Raw TOML config. Mirrors `~/.config/dev/config.toml` exactly.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawDevConfig {
     #[serde(default)]
     pub defaults: RawDefaults,
@@ -39,12 +40,14 @@ pub struct RawDevConfig {
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawDefaults {
     pub layout: Option<Layout>,
     pub host: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawProjectEntry {
     pub layout: Option<Layout>,
     pub path: Option<PathBuf>,
@@ -54,6 +57,7 @@ pub struct RawProjectEntry {
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawWorktreeEntry {
     pub layout: Option<Layout>,
     pub path: Option<PathBuf>,
@@ -194,6 +198,29 @@ impl DevConfig {
                 host: self.default_host.clone(),
                 custom_path: None,
             },
+        }
+    }
+
+    pub fn effective_project_config_with_fallback(
+        &self,
+        project: &str,
+        fallback_project: &str,
+    ) -> ResolvedSessionConfig {
+        if let Some(entry) = self
+            .projects
+            .get(project)
+            .or_else(|| self.projects.get(fallback_project))
+        {
+            return ResolvedSessionConfig {
+                layout: entry.layout.clone(),
+                host: entry.host.clone(),
+                custom_path: entry.custom_path.clone(),
+            };
+        }
+        ResolvedSessionConfig {
+            layout: self.default_layout.clone(),
+            host: self.default_host.clone(),
+            custom_path: None,
         }
     }
 
@@ -418,6 +445,40 @@ mod tests {
     }
 
     #[test]
+    fn fallback_project_preserves_current_query_then_session_name_resolution() {
+        let config = DevConfig::from_toml_str(
+            r#"
+            [defaults]
+            layout = "default"
+
+            [project.repo]
+            layout = "claude"
+            "#,
+            &home(),
+        )
+        .unwrap();
+        let resolved = config.effective_project_config_with_fallback("org/repo", "repo");
+        assert_eq!(resolved.layout, Layout::Claude);
+    }
+
+    #[test]
+    fn fallback_project_prefers_query_key_over_session_name() {
+        let config = DevConfig::from_toml_str(
+            r#"
+            [project.org-repo]
+            layout = "claude"
+
+            [project.repo]
+            layout = "default"
+            "#,
+            &home(),
+        )
+        .unwrap();
+        let resolved = config.effective_project_config_with_fallback("org-repo", "repo");
+        assert_eq!(resolved.layout, Layout::Claude);
+    }
+
+    #[test]
     fn validate_clean_toml_config() {
         use std::io::Write;
         let mut f = tempfile::NamedTempFile::new().unwrap();
@@ -448,6 +509,42 @@ mod tests {
         writeln!(f, "[defaults]\nlayout = \"fancy\"").unwrap();
         let warnings = validate_config(f.path());
         assert!(warnings.iter().any(|w| w.contains("unknown variant")));
+    }
+
+    #[test]
+    fn validate_unknown_top_level_table() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "[defualts]\nlayout = \"claude\"").unwrap();
+        let warnings = validate_config(f.path());
+        assert!(warnings.iter().any(|w| w.contains("unknown field")));
+    }
+
+    #[test]
+    fn validate_unknown_defaults_field() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "[defaults]\nlayuot = \"claude\"").unwrap();
+        let warnings = validate_config(f.path());
+        assert!(warnings.iter().any(|w| w.contains("unknown field")));
+    }
+
+    #[test]
+    fn validate_unknown_project_field() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "[project.dev]\nhsot = \"pop-mini\"").unwrap();
+        let warnings = validate_config(f.path());
+        assert!(warnings.iter().any(|w| w.contains("unknown field")));
+    }
+
+    #[test]
+    fn validate_unknown_worktree_field() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "[project.dev.worktree.fix]\nlayuot = \"claude\"").unwrap();
+        let warnings = validate_config(f.path());
+        assert!(warnings.iter().any(|w| w.contains("unknown field")));
     }
 
     #[test]
