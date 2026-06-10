@@ -68,34 +68,34 @@ path   = "~/.local/share/chezmoi"
 
 `[project.atomicguard]` and `[project.atomicguard.worktree.fix-guards]` coexist correctly — `toml 0.8` deserializes subtables into nested `HashMap` entries as expected. Projects without worktrees (such as `[project.dotfiles]` above) deserialize cleanly because `worktree` carries `#[serde(default)]`.
 
-The Rust structs:
+The raw TOML structs:
 
 ```rust
 #[derive(Debug, Clone, serde::Deserialize, Default)]
-pub struct DevConfig {
+pub struct RawDevConfig {
     #[serde(default)]
-    pub defaults: Defaults,
+    pub defaults: RawDefaults,
     #[serde(default)]
-    pub project: HashMap<String, ProjectEntry>,
+    pub project: HashMap<String, RawProjectEntry>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, Default)]
-pub struct Defaults {
+pub struct RawDefaults {
     pub layout: Option<Layout>,
     pub host: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct ProjectEntry {
+pub struct RawProjectEntry {
     pub layout: Option<Layout>,
     pub path: Option<PathBuf>,
     pub host: Option<String>,
     #[serde(default)]
-    pub worktree: HashMap<String, WorktreeEntry>,
+    pub worktree: HashMap<String, RawWorktreeEntry>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct WorktreeEntry {
+pub struct RawWorktreeEntry {
     pub layout: Option<Layout>,     // None = inherit from project
     pub path: Option<PathBuf>,      // None = derived from git worktree list
     pub host: Option<String>,       // None = inherit from project
@@ -104,7 +104,24 @@ pub struct WorktreeEntry {
 
 `None`-means-inherit throughout — no field is repeated when the parent default applies.
 
-### 3. Session URI grammar
+### 3. Raw config vs domain config
+
+The TOML structs above are raw config. They mirror the file format and exist only at the IO boundary. Application code must not depend on raw TOML structs directly.
+
+`config.rs` converts `RawDevConfig` into a domain `DevConfig`. `DevConfig` is the only config model consumed by orchestration code such as `api.rs`, daemon handlers, URI resolution, and future worktree logic.
+
+The domain config owns these rules:
+
+- Expand `~` paths after TOML deserialization and before exposing config to callers.
+- Resolve inheritance in one place: defaults -> project -> worktree.
+- Treat absent optional fields as inheritance, not as immediate fallback values inside callers.
+- Preserve current non-worktree behaviour while making worktree-specific fields available for later issues.
+
+For one concrete session identity, callers should ask the domain config for a `ResolvedSessionConfig`: the effective layout, host, optional path, and related config values after inheritance. `api.rs` should not ask raw questions such as "does this project override host?" or "what is the default layout?".
+
+The shared terminology for raw config, domain config, resolved session config, and session identity lives in [`docs/glossary.md`](../glossary.md).
+
+### 4. Session URI grammar
 
 A session is addressed by a URI of the form:
 
@@ -133,7 +150,7 @@ The `dev://` scheme prefix is accepted but optional — `dev atomicguard/fix-gua
    - Else → error: not found. (`category/project` display name fallback is deferred to a follow-on ADR once project discovery is redesigned for worktree grouping.)
 4. Resolved `(host, project, worktree)` tuple is the canonical session identity for all subsequent operations.
 
-### 4. tmux session name mapping
+### 5. tmux session name mapping
 
 Each host runs an independent tmux server; slug uniqueness is per-server, not global. The canonical tuple is mapped to a tmux-safe slug:
 
@@ -157,11 +174,17 @@ tmux session names cannot contain `/` or `:`. The slug uses `.` as the worktree 
 
 ## Consequences
 
-- `config.rs` replaces the hand-written parser with serde + `toml = "0.8"`. The `parse_config_str` function is removed; `parse_config(path: &Path) -> Result<DevConfig>` deserializes directly via `toml::from_str`, then applies `~` expansion to all `path` fields before returning.
+- `config.rs` replaces the hand-written parser with serde + `toml = "0.8"`. The `parse_config_str` function is removed; raw TOML is deserialized into `RawDevConfig`, then converted into the domain `DevConfig`.
+- `parse_config(path: &Path) -> Result<DevConfig>` returns the domain config, not raw TOML structs. `~` expansion happens during raw-to-domain conversion.
 - On startup, if `~/.config/dev/config` (INI) exists and `~/.config/dev/config.toml` does not, `dev` exits with a clear error message identifying the format change. No automatic conversion is provided.
 - `validate_config` is simplified — TOML parse errors include line/column; structural validation is handled by serde.
-- URI parsing is a new module (`uri.rs` or added to `resolve.rs`) returning `(Option<String>, String, Option<String>)` — host, project, worktree.
+- `DevConfig` exposes domain-facing resolution for effective session config. Callers outside `config.rs` do not implement defaults -> project -> worktree inheritance themselves.
+- URI parsing is a new module (`uri.rs` or added to `resolve.rs`) returning `(Option<String>, String, Option<String>)` — host, project, worktree. URI resolution consumes domain `DevConfig`, not raw TOML structs.
 - The two-token ambiguity rule must be tested explicitly, including the case where a token matches both a host value and a project name (host wins).
 - `dev doctor` gains a check: config file parses without error.
 - Worktree entry fields (`layout`, `path`, `host`) are defined in the schema now; worktree creation, discovery, and the `category/project` URI fallback are implemented separately.
 - `StreamLocalBindUnlink yes` and ControlMaster SSH config are prerequisites for the remote connectivity work that follows from URI host resolution — out of scope here, noted for the next ADR.
+
+Issue #58 implements only the TOML migration and raw/domain config boundary. It does not implement URI parsing, worktree creation, worktree discovery redesign, SSH tunnel changes, or a config migration command.
+
+Tests for #58 should drive the domain interface first: effective layout/host/path inheritance, raw TOML parsing shape, old INI detection, and preservation of current non-worktree behaviour.
