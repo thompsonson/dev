@@ -33,7 +33,7 @@ usage() {
 bootstrap.sh — download + install a prebuilt `dev` binary
 
   --host           install + enable the systemd --user daemon (Linux host)
-  --client HOST    install + record default_host=HOST (laptop/phone)
+  --client HOST    install + record defaults.host=HOST (laptop/phone)
   --channel CH     release channel: stable (default) or dev
   --version V      release tag to install (default: latest for channel)
   --prefix DIR     install prefix (default: Termux $PREFIX, else ~/.local)
@@ -206,25 +206,37 @@ command -v tmux >/dev/null 2>&1 || warn "tmux not found — $(is_termux && echo 
 
 # --- role setup --------------------------------------------------------------
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dev"
-CONFIG_FILE="$CONFIG_DIR/config"
-set_config_key() {
-  local key="$1" val="$2"
+CONFIG_FILE="$CONFIG_DIR/config.toml"
+set_default_host() {
+  local val="$1"
   mkdir -p "$CONFIG_DIR"
-  touch "$CONFIG_FILE"
-  if grep -qE "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
-    local t; t="$(mktemp)"
-    sed "s|^${key}=.*|${key}=${val}|" "$CONFIG_FILE" >"$t"
-    mv "$t" "$CONFIG_FILE"
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    printf '[defaults]\nhost = "%s"\n' "$val" >"$CONFIG_FILE"
   else
-    printf '%s=%s\n' "$key" "$val" >>"$CONFIG_FILE"
+    local t; t="$(mktemp)"
+    awk -v val="$val" '
+      BEGIN { in_defaults=0; saw_defaults=0; set_host=0 }
+      /^\[defaults\][[:space:]]*$/ { in_defaults=1; saw_defaults=1; print; next }
+      /^\[.*\][[:space:]]*$/ {
+        if (in_defaults && !set_host) { print "host = \"" val "\""; set_host=1 }
+        in_defaults=0; print; next
+      }
+      in_defaults && /^[[:space:]]*host[[:space:]]*=/ { print "host = \"" val "\""; set_host=1; next }
+      { print }
+      END {
+        if (!saw_defaults) { print ""; print "[defaults]"; print "host = \"" val "\"" }
+        else if (in_defaults && !set_host) { print "host = \"" val "\"" }
+      }
+    ' "$CONFIG_FILE" >"$t"
+    mv "$t" "$CONFIG_FILE"
   fi
-  log "Set ${key}=${val} in $CONFIG_FILE"
+  log "Set defaults.host=${val} in $CONFIG_FILE"
 }
 
 case "$ROLE" in
   client)
     [[ -n "$CLIENT_HOST" ]] || die "client role needs a host (DEV_HOST=... or --client HOST)"
-    set_config_key "default_host" "$CLIENT_HOST"
+    set_default_host "$CLIENT_HOST"
     log "Client of ${CLIENT_HOST}. Check reachability:  ssh ${CLIENT_HOST} true"
     ;;
   host)

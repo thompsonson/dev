@@ -176,18 +176,23 @@ PROJECT DISCOVERY
   If names collide, the category/project form is used.
 
 CONFIGURATION
-  Per-project layouts are configured in ~/.config/dev/config:
+  Per-project layouts are configured in ~/.config/dev/config.toml:
 
-    default_layout=default
-    atomicguard=claude@myserver
-    web-app-deploy=claude@myserver
-    my-local-thing=default
-    dotfiles=claude:~/.local/share/chezmoi
+    [defaults]
+    layout = \"default\"
 
-  Format: project=layout[:path][@host]
+    [project.atomicguard]
+    layout = \"claude\"
+    host = \"myserver\"
+
+    [project.dotfiles]
+    layout = \"claude\"
+    path = \"~/.local/share/chezmoi\"
+
+  Fields:
   - layout: default, claude
-  - :path:  optional custom directory (expands ~); omit for ~/Projects projects
-  - @host:  optional SSH hostname; omit for local projects
+  - path:   optional custom directory (expands ~); omit for ~/Projects projects
+  - host:   optional SSH hostname; omit for local projects
 "
     );
 }
@@ -672,6 +677,12 @@ fn cmd_doctor(config_override: Option<&std::path::Path>) -> Result<()> {
                 fail!(w.clone());
             }
         }
+    } else if dev_lib::config::legacy_config_path().exists() {
+        fail!(format!(
+            "legacy config found at {}; migrate it to TOML at {}",
+            dev_lib::config::legacy_config_path().display(),
+            config_path.display()
+        ));
     } else {
         eprintln!(
             "  {}–{} config not found at {} (using defaults)",
@@ -681,9 +692,9 @@ fn cmd_doctor(config_override: Option<&std::path::Path>) -> Result<()> {
         );
     }
 
-    // default_host reachability
+    // defaults.host reachability
     let config = dev_lib::config::parse_config(&config_path)?;
-    if let Some(ref host) = config.default_host {
+    if let Some(host) = config.default_host() {
         match Command::new("ssh")
             .args([
                 "-o",
@@ -695,9 +706,9 @@ fn cmd_doctor(config_override: Option<&std::path::Path>) -> Result<()> {
             ])
             .status()
         {
-            Ok(s) if s.success() => ok!(format!("default_host={host} reachable")),
+            Ok(s) if s.success() => ok!(format!("defaults.host={host} reachable")),
             _ => fail!(format!(
-                "default_host={host} unreachable — check ssh config"
+                "defaults.host={host} unreachable — check ssh config"
             )),
         }
     }

@@ -35,7 +35,7 @@ git clone git@github.com:thompsonson/dev.git
 cd dev
 scripts/install.sh              # build + install to ~/.local/bin/dev (no role)
 scripts/install.sh --host       # daemon host: also install + start the systemd --user service (Linux)
-scripts/install.sh --client HOST# client: install + record default_host=HOST, no daemon
+scripts/install.sh --client HOST# client: install + record defaults.host=HOST, no daemon
 scripts/install.sh --uninstall  # remove binary (and unit, if present)
 ```
 
@@ -50,10 +50,10 @@ a stable name and reachability). A typical fleet:
 | Machine | Command | Result |
 |---|---|---|
 | `pop-mini` (always-on) | `scripts/install.sh --host` | binary + `dev daemon` under systemd --user |
-| laptop | `scripts/install.sh --client pop-mini` | binary + `default_host=pop-mini` |
+| laptop | `scripts/install.sh --client pop-mini` | binary + `defaults.host = "pop-mini"` |
 | phone (Termux) | `pkg install rust tmux openssh && scripts/install.sh --client pop-mini` | same, no systemd |
 
-The client role writes `default_host` to `~/.config/dev/config`, so `dev <project>`
+The client role writes `defaults.host` to `~/.config/dev/config.toml`, so `dev <project>`
 on the laptop or phone targets `pop-mini`. On Termux there is no systemd, so the
 host role is rejected there — a phone is always a client.
 
@@ -80,7 +80,7 @@ curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootst
 ```
 
 The bootstrap detects OS/arch, verifies the published SHA-256, installs to
-`$PREFIX/bin` on Termux (else `~/.local/bin`), and records `default_host`.
+`$PREFIX/bin` on Termux (else `~/.local/bin`), and records `defaults.host`.
 If the static binary ever fails to run on a given Android, fall back to
 `pkg install rust && cargo install --git https://github.com/thompsonson/dev dev-cli`.
 
@@ -141,16 +141,25 @@ web-app  default  1      3m
 
 ### Project config
 
-Per-project layouts live in `~/.config/dev/config`:
+Per-project layouts live in `~/.config/dev/config.toml`:
 
-```ini
-default_layout=default
-atomicguard=claude
-dotfiles=claude:~/.local/share/chezmoi
-some-remote=default@other-host
+```toml
+[defaults]
+layout = "default"
+
+[project.atomicguard]
+layout = "claude"
+
+[project.dotfiles]
+layout = "claude"
+path = "~/.local/share/chezmoi"
+
+[project.some-remote]
+layout = "default"
+host = "other-host"
 ```
 
-Format: `project=layout[:path][@host]`. `layout` is `default` or `claude`; `:path` lets a project key point at a custom directory; `@host` forwards the command via SSH to another machine.
+`layout` is `default` or `claude`; `path` lets a project key point at a custom directory; `host` forwards the command via SSH to another machine.
 
 ---
 
