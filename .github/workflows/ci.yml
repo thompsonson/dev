@@ -7,17 +7,35 @@ on:
       - '**/*.rs'
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+      - '.release-please-manifest.json'
   pull_request:
     paths:
       - '**/*.rs'
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+      - '.release-please-manifest.json'
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  version-guard:
+    name: version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check Cargo.toml version matches release-please manifest
+        run: |
+          cargo_ver=$(grep '^version' dev-cli/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          manifest_ver=$(jq -r '.["dev-cli"]' .release-please-manifest.json)
+          echo "dev-cli/Cargo.toml:               $cargo_ver"
+          echo ".release-please-manifest.json:    $manifest_ver"
+          if [ "$cargo_ver" != "$manifest_ver" ]; then
+            echo "Version mismatch — edit .release-please-manifest.json or revert the Cargo.toml change."
+            exit 1
+          fi
+
   test:
     name: test (${{ matrix.os }})
     strategy:
