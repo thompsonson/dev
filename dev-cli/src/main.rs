@@ -136,6 +136,10 @@ fn run() -> Result<()> {
             let tail: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
             cmd_run_in(&tail)
         }
+        Some("send") => {
+            let tail: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
+            cmd_send(&tail)
+        }
         Some(project) => cmd_open(project, None),
     }
 }
@@ -156,6 +160,8 @@ USAGE
   dev detach              Detach from current tmux session
   dev kill <name>         Kill a session
   dev kill-all            Kill all sessions (with confirmation)
+  dev send <session>[:<window>.<pane>] <message...>
+                          Send a message to a pane (default pane: 1.1)
   dev doctor [--config F] Check environment and config
   dev update              Check for and apply updates
   dev version             Print version and exit
@@ -969,6 +975,31 @@ fn cmd_run_in(args: &[String]) -> Result<()> {
         if exit != 0 {
             std::process::exit(exit as i32);
         }
+    }
+    Ok(())
+}
+
+fn cmd_send(args: &[String]) -> Result<()> {
+    if args.len() < 2 {
+        die("Usage: dev send <session>[:<window>.<pane>] <message...>");
+    }
+    let target = args[0].as_str();
+    let message = args[1..].join(" ");
+
+    let (session, pane) = match target.split_once(':') {
+        Some((s, p)) => (s, p),
+        None => (target, "1.1"),
+    };
+
+    let body = serde_json::json!({
+        "keys": message,
+        "enter": true,
+    });
+    let path = format!("/sessions/{session}/panes/{pane}/keys");
+    let resp = http_over_uds("POST", &path, Some(&body))?;
+
+    if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+        bail!("{err}");
     }
     Ok(())
 }
