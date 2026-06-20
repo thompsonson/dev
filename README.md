@@ -115,6 +115,7 @@ dev kill-all                  Kill every session (with confirmation)
 dev layout [name]             Print or switch the default layout
 dev daemon                    Run the Unix-socket API server
 dev run-in <target> <cmd>     Run a command in a pane and capture its output
+dev send <target> <msg...>    Send a message to a pane (visible to the agent)
 dev help                      Full help text
 ```
 
@@ -171,7 +172,7 @@ Lots of tools need to "run this command inside that tmux pane and tell me what h
 
 - **One process**, one implementation of pane-output capture (the marker-sandwich technique), one place to fix bugs in it.
 - **A local Unix socket** — no network, no auth story, just filesystem permissions on `~/.local/run/dev.sock`.
-- **Two consumer styles on the same backend:** observe + interact (list sessions, capture content, fire-and-forget send-keys — for UIs and agents) and run + capture (synchronous request/response with exit code — for effectors that need a structured result to feed a guard).
+- **Two consumer styles on the same backend:** observe + interact (list sessions, capture content, send keys to a pane — for UIs and agents) and run + capture (synchronous request/response with exit code — for effectors that need a structured result to feed a guard). `dev send <session> <message>` and `dev run-in <session> <command>` are the CLI interfaces for these two styles respectively.
 
 If you're plumbing tmux from a Python effector, a Rust agent, or a web UI, talk to the daemon instead of shelling out to `tmux` directly.
 
