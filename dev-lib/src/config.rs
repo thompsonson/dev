@@ -36,6 +36,8 @@ pub struct RawDevConfig {
     #[serde(default)]
     pub defaults: RawDefaults,
     #[serde(default)]
+    pub sandbox: RawSandboxDefaults,
+    #[serde(default)]
     pub project: HashMap<String, RawProjectEntry>,
 }
 
@@ -48,6 +50,16 @@ pub struct RawDefaults {
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RawSandboxDefaults {
+    pub backend: Option<String>,
+    pub base_profile: Option<String>,
+    pub profile_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub sockets: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawProjectEntry {
     pub layout: Option<Layout>,
     pub path: Option<PathBuf>,
@@ -55,7 +67,22 @@ pub struct RawProjectEntry {
     pub repository: Option<String>,
     pub responsibility: Option<String>,
     #[serde(default)]
+    pub sandbox: Option<RawProjectSandbox>,
+    #[serde(default)]
     pub worktree: HashMap<String, RawWorktreeEntry>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawProjectSandbox {
+    #[serde(default)]
+    pub write: Vec<PathBuf>,
+    #[serde(default)]
+    pub read: Vec<PathBuf>,
+    #[serde(default)]
+    pub sockets: Vec<PathBuf>,
+    pub base_profile: Option<String>,
+    pub profile_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -76,9 +103,38 @@ pub struct ProjectEntry {
     pub host: Option<String>,
     pub repository: Option<String>,
     pub responsibility: Option<String>,
+    pub sandbox: Option<ProjectSandbox>,
     /// Parsed now to establish the ADR 002 domain model; consumed by the
     /// URI/worktree work in #59/#60, not by the current project-only runtime.
     pub worktrees: HashMap<String, WorktreeEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxDefaults {
+    pub backend: String,
+    pub base_profile: String,
+    pub profile_dir: Option<PathBuf>,
+    pub sockets: Vec<PathBuf>,
+}
+
+impl Default for SandboxDefaults {
+    fn default() -> Self {
+        Self {
+            backend: "nono".to_string(),
+            base_profile: "always-further/opencode".to_string(),
+            profile_dir: None,
+            sockets: vec![PathBuf::from("/run/user/1000/dev.sock")],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectSandbox {
+    pub write: Vec<PathBuf>,
+    pub read: Vec<PathBuf>,
+    pub sockets: Vec<PathBuf>,
+    pub base_profile: Option<String>,
+    pub profile_name: Option<String>,
 }
 
 /// A domain worktree config entry. Values are effective after inheritance.
@@ -106,6 +162,7 @@ pub struct ResolvedSessionConfig {
 pub struct DevConfig {
     default_layout: Layout,
     default_host: Option<String>,
+    sandbox_defaults: SandboxDefaults,
     projects: HashMap<String, ProjectEntry>,
 }
 
@@ -114,6 +171,7 @@ impl Default for DevConfig {
         Self {
             default_layout: Layout::Default,
             default_host: None,
+            sandbox_defaults: SandboxDefaults::default(),
             projects: HashMap::new(),
         }
     }
@@ -130,9 +188,24 @@ impl DevConfig {
         default_host: Option<String>,
         projects: HashMap<String, ProjectEntry>,
     ) -> Self {
+        Self::new_with_sandbox(
+            default_layout,
+            default_host,
+            SandboxDefaults::default(),
+            projects,
+        )
+    }
+
+    pub fn new_with_sandbox(
+        default_layout: Layout,
+        default_host: Option<String>,
+        sandbox_defaults: SandboxDefaults,
+        projects: HashMap<String, ProjectEntry>,
+    ) -> Self {
         Self {
             default_layout,
             default_host,
+            sandbox_defaults,
             projects,
         }
     }
@@ -140,6 +213,23 @@ impl DevConfig {
     pub fn from_raw(raw: RawDevConfig, home: &Path) -> Self {
         let default_layout = raw.defaults.layout.unwrap_or(Layout::Default);
         let default_host = raw.defaults.host;
+        let sandbox_defaults = SandboxDefaults {
+            backend: raw.sandbox.backend.unwrap_or_else(|| "nono".to_string()),
+            base_profile: raw
+                .sandbox
+                .base_profile
+                .unwrap_or_else(|| "always-further/opencode".to_string()),
+            profile_dir: raw.sandbox.profile_dir.map(|p| expand_home(p, home)),
+            sockets: if raw.sandbox.sockets.is_empty() {
+                SandboxDefaults::default().sockets
+            } else {
+                raw.sandbox
+                    .sockets
+                    .into_iter()
+                    .map(|p| expand_home(p, home))
+                    .collect()
+            },
+        };
         let mut projects = HashMap::new();
 
         for (name, raw_project) in raw.project {
@@ -149,6 +239,25 @@ impl DevConfig {
                 .unwrap_or_else(|| default_layout.clone());
             let project_host = raw_project.host.clone().or_else(|| default_host.clone());
             let project_path = raw_project.path.map(|p| expand_home(p, home));
+            let sandbox = raw_project.sandbox.map(|sandbox| ProjectSandbox {
+                write: sandbox
+                    .write
+                    .into_iter()
+                    .map(|p| expand_home(p, home))
+                    .collect(),
+                read: sandbox
+                    .read
+                    .into_iter()
+                    .map(|p| expand_home(p, home))
+                    .collect(),
+                sockets: sandbox
+                    .sockets
+                    .into_iter()
+                    .map(|p| expand_home(p, home))
+                    .collect(),
+                base_profile: sandbox.base_profile,
+                profile_name: sandbox.profile_name,
+            });
             let mut worktrees = HashMap::new();
 
             for (worktree_name, raw_worktree) in raw_project.worktree {
@@ -178,6 +287,7 @@ impl DevConfig {
                     host: project_host,
                     repository: raw_project.repository,
                     responsibility: raw_project.responsibility,
+                    sandbox,
                     worktrees,
                 },
             );
@@ -186,6 +296,7 @@ impl DevConfig {
         Self {
             default_layout,
             default_host,
+            sandbox_defaults,
             projects,
         }
     }
@@ -201,6 +312,10 @@ impl DevConfig {
 
     pub fn default_host(&self) -> Option<&str> {
         self.default_host.as_deref()
+    }
+
+    pub fn sandbox_defaults(&self) -> &SandboxDefaults {
+        &self.sandbox_defaults
     }
 
     pub fn projects(&self) -> &HashMap<String, ProjectEntry> {
@@ -452,6 +567,45 @@ mod tests {
         assert_eq!(
             resolved.responsibility.as_deref(),
             Some("Maintain dev session workflows")
+        );
+    }
+
+    #[test]
+    fn parses_sandbox_defaults_and_project_policy() {
+        let config = DevConfig::from_toml_str(
+            r#"
+            [sandbox]
+            backend = "nono"
+            base_profile = "always-further/opencode"
+            profile_dir = "~/.config/dev/sandbox/profiles"
+            sockets = ["/run/user/1000/dev.sock"]
+
+            [project.web-app]
+            path = "~/Projects/team-a/web-app"
+
+            [project.web-app.sandbox]
+            write = ["."]
+            read = ["~/Projects/team-a"]
+            "#,
+            &home(),
+        )
+        .unwrap();
+
+        assert_eq!(config.sandbox_defaults().backend, "nono");
+        assert_eq!(
+            config.sandbox_defaults().profile_dir.as_deref(),
+            Some(Path::new("/home/testuser/.config/dev/sandbox/profiles"))
+        );
+        let sandbox = config
+            .project("web-app")
+            .unwrap()
+            .sandbox
+            .as_ref()
+            .unwrap();
+        assert_eq!(sandbox.write, vec![PathBuf::from(".")]);
+        assert_eq!(
+            sandbox.read,
+            vec![PathBuf::from("/home/testuser/Projects/team-a")]
         );
     }
 

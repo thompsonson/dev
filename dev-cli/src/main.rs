@@ -148,6 +148,7 @@ fn run() -> Result<()> {
             let tail: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
             cmd_send(&tail)
         }
+        Some("sandbox") => cmd_sandbox(&args[1..]),
         Some(project) => cmd_open(project, None),
     }
 }
@@ -172,6 +173,10 @@ USAGE
   dev inspect <session>   JSON session metadata, git state, and pane content
   dev send <session>[:<window>.<pane>] <message...>
                           Send a message to a pane (default pane: 1.1)
+  dev sandbox show <project>
+                          Print generated nono profile JSON
+  dev sandbox generate <project>
+                          Write generated nono profile JSON
   dev doctor [--config F] Check environment and config
   dev update              Check for and apply updates
   dev version             Print version and exit
@@ -380,6 +385,36 @@ fn cmd_layout(name: Option<&str>) -> Result<()> {
             Ok(())
         }
         Some(other) => bail!("Unknown layout: {}", other),
+    }
+}
+
+fn cmd_sandbox(args: &[&str]) -> Result<()> {
+    let Some(command) = args.first().copied() else {
+        bail!("Usage: dev sandbox <show|generate> <project>");
+    };
+    let project = args
+        .get(1)
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("Usage: dev sandbox <show|generate> <project>"))?;
+    if args.len() > 2 {
+        bail!("Usage: dev sandbox <show|generate> <project>");
+    }
+
+    let mgr = DevManager::new()?;
+    let profile =
+        dev_lib::sandbox::build_nono_profile(mgr.config(), mgr.discovered_projects(), project)?;
+
+    match command {
+        "show" => {
+            println!("{}", serde_json::to_string_pretty(&profile.json)?);
+            Ok(())
+        }
+        "generate" => {
+            dev_lib::sandbox::write_profile(&profile)?;
+            println!("{}", profile.path.display());
+            Ok(())
+        }
+        other => bail!("unknown sandbox command: {other}"),
     }
 }
 
