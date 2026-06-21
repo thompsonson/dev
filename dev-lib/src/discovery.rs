@@ -175,6 +175,7 @@ mod tests {
                     host: None,
                     repository: None,
                     responsibility: None,
+                    sandbox: None,
                     worktrees: std::collections::HashMap::new(),
                 },
             )]

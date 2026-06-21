@@ -552,6 +552,7 @@ mod tests {
                     host: Some("remotehost".to_string()),
                     repository: None,
                     responsibility: None,
+                    sandbox: None,
                     worktrees: std::collections::HashMap::new(),
                 },
             )]
@@ -585,6 +586,7 @@ mod tests {
                     host: Some("thisbox".to_string()),
                     repository: None,
                     responsibility: None,
+                    sandbox: None,
                     worktrees: std::collections::HashMap::new(),
                 },
             )]
@@ -656,6 +658,7 @@ mod tests {
                     host: Some("remotehost".to_string()),
                     repository: None,
                     responsibility: None,
+                    sandbox: None,
                     worktrees: std::collections::HashMap::new(),
                 },
             )]
@@ -694,6 +697,7 @@ mod tests {
                     host: None,
                     repository: Some("git@github.com:thompsonson/dev.git".to_string()),
                     responsibility: Some("Maintain dev session workflows".to_string()),
+                    sandbox: None,
                     worktrees: std::collections::HashMap::new(),
                 },
             )]
@@ -748,6 +752,7 @@ mod tests {
                     host: None,
                     repository: Some("https://github.com/thompsonson/dev.git".to_string()),
                     responsibility: Some("Maintain dev session workflows".to_string()),
+                    sandbox: None,
                     worktrees: std::collections::HashMap::new(),
                 },
             )]
