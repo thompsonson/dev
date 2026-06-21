@@ -52,6 +52,8 @@ pub struct RawProjectEntry {
     pub layout: Option<Layout>,
     pub path: Option<PathBuf>,
     pub host: Option<String>,
+    pub repository: Option<String>,
+    pub responsibility: Option<String>,
     #[serde(default)]
     pub worktree: HashMap<String, RawWorktreeEntry>,
 }
@@ -62,6 +64,8 @@ pub struct RawWorktreeEntry {
     pub layout: Option<Layout>,
     pub path: Option<PathBuf>,
     pub host: Option<String>,
+    pub repository: Option<String>,
+    pub responsibility: Option<String>,
 }
 
 /// A domain project config entry. Values are effective for the main worktree.
@@ -70,6 +74,8 @@ pub struct ProjectEntry {
     pub layout: Layout,
     pub custom_path: Option<PathBuf>,
     pub host: Option<String>,
+    pub repository: Option<String>,
+    pub responsibility: Option<String>,
     /// Parsed now to establish the ADR 002 domain model; consumed by the
     /// URI/worktree work in #59/#60, not by the current project-only runtime.
     pub worktrees: HashMap<String, WorktreeEntry>,
@@ -81,6 +87,8 @@ pub struct WorktreeEntry {
     pub layout: Layout,
     pub custom_path: Option<PathBuf>,
     pub host: Option<String>,
+    pub repository: Option<String>,
+    pub responsibility: Option<String>,
 }
 
 /// Effective config for a concrete project/worktree session.
@@ -89,6 +97,8 @@ pub struct ResolvedSessionConfig {
     pub layout: Layout,
     pub host: Option<String>,
     pub custom_path: Option<PathBuf>,
+    pub repository: Option<String>,
+    pub responsibility: Option<String>,
 }
 
 /// Domain config consumed by application code.
@@ -150,6 +160,12 @@ impl DevConfig {
                             .unwrap_or_else(|| project_layout.clone()),
                         custom_path: raw_worktree.path.map(|p| expand_home(p, home)),
                         host: raw_worktree.host.or_else(|| project_host.clone()),
+                        repository: raw_worktree
+                            .repository
+                            .or_else(|| raw_project.repository.clone()),
+                        responsibility: raw_worktree
+                            .responsibility
+                            .or_else(|| raw_project.responsibility.clone()),
                     },
                 );
             }
@@ -160,6 +176,8 @@ impl DevConfig {
                     layout: project_layout,
                     custom_path: project_path,
                     host: project_host,
+                    repository: raw_project.repository,
+                    responsibility: raw_project.responsibility,
                     worktrees,
                 },
             );
@@ -199,11 +217,15 @@ impl DevConfig {
                 layout: entry.layout.clone(),
                 host: entry.host.clone(),
                 custom_path: entry.custom_path.clone(),
+                repository: entry.repository.clone(),
+                responsibility: entry.responsibility.clone(),
             },
             None => ResolvedSessionConfig {
                 layout: self.default_layout.clone(),
                 host: self.default_host.clone(),
                 custom_path: None,
+                repository: None,
+                responsibility: None,
             },
         }
     }
@@ -222,12 +244,16 @@ impl DevConfig {
                 layout: entry.layout.clone(),
                 host: entry.host.clone(),
                 custom_path: entry.custom_path.clone(),
+                repository: entry.repository.clone(),
+                responsibility: entry.responsibility.clone(),
             };
         }
         ResolvedSessionConfig {
             layout: self.default_layout.clone(),
             host: self.default_host.clone(),
             custom_path: None,
+            repository: None,
+            responsibility: None,
         }
     }
 
@@ -250,6 +276,8 @@ impl DevConfig {
             layout: worktree_entry.layout.clone(),
             host: worktree_entry.host.clone(),
             custom_path: worktree_entry.custom_path.clone(),
+            repository: worktree_entry.repository.clone(),
+            responsibility: worktree_entry.responsibility.clone(),
         }
     }
 }
@@ -406,6 +434,28 @@ mod tests {
     }
 
     #[test]
+    fn project_accepts_optional_repository_and_responsibility_metadata() {
+        let config = DevConfig::from_toml_str(
+            r#"
+            [project.dev]
+            repository = "git@github.com:thompsonson/dev.git"
+            responsibility = "Maintain dev session workflows"
+            "#,
+            &home(),
+        )
+        .unwrap();
+        let resolved = config.effective_project_config("dev");
+        assert_eq!(
+            resolved.repository.as_deref(),
+            Some("git@github.com:thompsonson/dev.git")
+        );
+        assert_eq!(
+            resolved.responsibility.as_deref(),
+            Some("Maintain dev session workflows")
+        );
+    }
+
+    #[test]
     fn worktree_inherits_from_project_then_overrides_specific_fields() {
         let config = DevConfig::from_toml_str(
             r#"
@@ -432,6 +482,28 @@ mod tests {
                 "/home/testuser/Projects/atomicguard.worktrees/fix-guards"
             ))
         );
+    }
+
+    #[test]
+    fn worktree_inherits_project_metadata() {
+        let config = DevConfig::from_toml_str(
+            r#"
+            [project.dev]
+            repository = "https://github.com/thompsonson/dev"
+            responsibility = "Maintain dev"
+
+            [project.dev.worktree.fix-send]
+            path = "~/Projects/dev.worktrees/fix-send"
+            "#,
+            &home(),
+        )
+        .unwrap();
+        let resolved = config.effective_session_config("dev", Some("fix-send"));
+        assert_eq!(
+            resolved.repository.as_deref(),
+            Some("https://github.com/thompsonson/dev")
+        );
+        assert_eq!(resolved.responsibility.as_deref(), Some("Maintain dev"));
     }
 
     #[test]

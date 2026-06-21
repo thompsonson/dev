@@ -173,6 +173,8 @@ mod tests {
                     layout: Layout::Claude,
                     custom_path: Some(custom.path().to_path_buf()),
                     host: None,
+                    repository: None,
+                    responsibility: None,
                     worktrees: std::collections::HashMap::new(),
                 },
             )]

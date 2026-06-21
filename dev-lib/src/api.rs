@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context, Result};
 
@@ -29,6 +30,15 @@ pub struct ProjectInfo {
     pub path: String,
     pub layout: String,
     pub host: Option<String>,
+    pub repository: Option<String>,
+    pub responsibility: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectMetadata {
+    path: Option<PathBuf>,
+    repository: Option<String>,
+    responsibility: String,
 }
 
 /// Result of resolving and preparing to open a project.
@@ -83,7 +93,14 @@ impl DevManager {
             .list_sessions()?
             .into_iter()
             .map(|mut s| {
+                let metadata = self.session_metadata(&s.name);
                 s.host = self.local_hostname.clone();
+                s.project_path = metadata
+                    .path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string());
+                s.repository = metadata.repository;
+                s.responsibility = metadata.responsibility;
                 s
             })
             .collect();
@@ -106,6 +123,14 @@ impl DevManager {
                     .config
                     .effective_project_config_with_fallback(&p.display_name, basename);
                 let layout = project_config.layout.to_string();
+                let repository = normalize_repository(
+                    project_config
+                        .repository
+                        .or_else(|| git_origin_repository(&p.full_path)),
+                );
+                let responsibility = project_config
+                    .responsibility
+                    .unwrap_or_else(|| default_responsibility(&p.display_name));
 
                 let host = match self.resolve_target(&p.display_name) {
                     Target::Remote(h) => Some(h),
@@ -117,6 +142,8 @@ impl DevManager {
                     path: p.full_path.to_string_lossy().to_string(),
                     layout,
                     host,
+                    repository,
+                    responsibility,
                 });
             }
         }
@@ -133,6 +160,11 @@ impl DevManager {
                         path: String::new(),
                         layout: entry.layout.to_string(),
                         host: Some(host.clone()),
+                        repository: normalize_repository(entry.repository.clone()),
+                        responsibility: entry
+                            .responsibility
+                            .clone()
+                            .unwrap_or_else(|| default_responsibility(key)),
                     });
                 }
             }
@@ -318,6 +350,106 @@ impl DevManager {
     pub fn config(&self) -> &DevConfig {
         &self.config
     }
+
+    fn session_metadata(&self, session_name: &str) -> ProjectMetadata {
+        let discovered = self.projects.iter().find(|p| {
+            let basename = p
+                .full_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&p.display_name);
+            p.display_name == session_name || basename == session_name
+        });
+
+        if let Some(project) = discovered {
+            let basename = project
+                .full_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&project.display_name);
+            let config = self
+                .config
+                .effective_project_config_with_fallback(&project.display_name, basename);
+            return ProjectMetadata {
+                path: Some(project.full_path.clone()),
+                repository: normalize_repository(
+                    config
+                        .repository
+                        .or_else(|| git_origin_repository(&project.full_path)),
+                ),
+                responsibility: config
+                    .responsibility
+                    .unwrap_or_else(|| default_responsibility(&project.display_name)),
+            };
+        }
+
+        if let Some(entry) = self.config.project(session_name) {
+            return ProjectMetadata {
+                path: entry.custom_path.clone(),
+                repository: normalize_repository(entry.repository.clone()),
+                responsibility: entry
+                    .responsibility
+                    .clone()
+                    .unwrap_or_else(|| default_responsibility(session_name)),
+            };
+        }
+
+        ProjectMetadata {
+            path: None,
+            repository: None,
+            responsibility: default_responsibility(session_name),
+        }
+    }
+}
+
+fn default_responsibility(name: &str) -> String {
+    format!("Responsible for {name}")
+}
+
+fn git_origin_repository(path: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(path)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn normalize_repository(repository: Option<String>) -> Option<String> {
+    repository.map(|value| normalize_repository_value(&value))
+}
+
+fn normalize_repository_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if let Some((host, path)) = parse_ssh_repository(trimmed) {
+        return format!("https://{}/{}", host, strip_git_suffix(path));
+    }
+    if let Some(rest) = trimmed.strip_prefix("https://") {
+        return format!("https://{}", strip_git_suffix(rest));
+    }
+    trimmed.to_string()
+}
+
+fn parse_ssh_repository(value: &str) -> Option<(&str, &str)> {
+    let rest = value.strip_prefix("git@")?;
+    let (host, path) = rest.split_once(':')?;
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some((host, path))
+}
+
+fn strip_git_suffix(value: &str) -> &str {
+    value.strip_suffix(".git").unwrap_or(value)
 }
 
 #[cfg(test)]
@@ -353,6 +485,9 @@ mod tests {
             attached: false,
             last_activity: 0,
             layout: "default".to_string(),
+            project_path: None,
+            repository: None,
+            responsibility: String::new(),
         }]);
         let mgr = DevManager {
             config: DevConfig::default(),
@@ -373,6 +508,9 @@ mod tests {
             attached: true,
             last_activity: 1000,
             layout: "claude".to_string(),
+            project_path: None,
+            repository: None,
+            responsibility: String::new(),
         }]);
         let mgr = DevManager {
             config: DevConfig::default(),
@@ -384,6 +522,7 @@ mod tests {
         let output = mgr.list().unwrap();
         assert_eq!(output.sessions.len(), 1);
         assert_eq!(output.sessions[0].name, "chops");
+        assert_eq!(output.sessions[0].responsibility, "Responsible for chops");
     }
 
     #[test]
@@ -411,6 +550,8 @@ mod tests {
                     layout: Layout::Default,
                     custom_path: None,
                     host: Some("remotehost".to_string()),
+                    repository: None,
+                    responsibility: None,
                     worktrees: std::collections::HashMap::new(),
                 },
             )]
@@ -442,6 +583,8 @@ mod tests {
                     layout: Layout::Default,
                     custom_path: None,
                     host: Some("thisbox".to_string()),
+                    repository: None,
+                    responsibility: None,
                     worktrees: std::collections::HashMap::new(),
                 },
             )]
@@ -511,6 +654,8 @@ mod tests {
                     layout: Layout::Default,
                     custom_path: None,
                     host: Some("remotehost".to_string()),
+                    repository: None,
+                    responsibility: None,
                     worktrees: std::collections::HashMap::new(),
                 },
             )]
@@ -531,5 +676,153 @@ mod tests {
 
         let session_name = mgr.start("myproject", None).unwrap();
         assert_eq!(session_name, "myproject");
+    }
+
+    #[test]
+    fn list_enriches_sessions_with_configured_metadata() {
+        use crate::config::{DevConfig, Layout, ProjectEntry};
+        use crate::discovery::DiscoveredProject;
+
+        let config = DevConfig::new(
+            Layout::Default,
+            None,
+            [(
+                "dev".to_string(),
+                ProjectEntry {
+                    layout: Layout::Default,
+                    custom_path: None,
+                    host: None,
+                    repository: Some("git@github.com:thompsonson/dev.git".to_string()),
+                    responsibility: Some("Maintain dev session workflows".to_string()),
+                    worktrees: std::collections::HashMap::new(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let mock = MockTmux::with_sessions(vec![SessionInfo {
+            name: "dev".to_string(),
+            host: String::new(),
+            pane_count: 1,
+            attached: false,
+            last_activity: 0,
+            layout: "default".to_string(),
+            project_path: None,
+            repository: None,
+            responsibility: String::new(),
+        }]);
+        let mgr = DevManager {
+            config,
+            projects: vec![DiscoveredProject {
+                display_name: "dev".to_string(),
+                full_path: PathBuf::from("/tmp/dev"),
+            }],
+            projects_dir: PathBuf::from("/tmp"),
+            tmux: Box::new(mock),
+            local_hostname: "pop-mini".to_string(),
+        };
+
+        let output = mgr.list().unwrap();
+        let session = &output.sessions[0];
+        assert_eq!(session.project_path.as_deref(), Some("/tmp/dev"));
+        assert_eq!(
+            session.repository.as_deref(),
+            Some("https://github.com/thompsonson/dev")
+        );
+        assert_eq!(session.responsibility, "Maintain dev session workflows");
+    }
+
+    #[test]
+    fn list_enriches_projects_with_configured_metadata() {
+        use crate::config::{DevConfig, Layout, ProjectEntry};
+        use crate::discovery::DiscoveredProject;
+
+        let config = DevConfig::new(
+            Layout::Default,
+            None,
+            [(
+                "dev".to_string(),
+                ProjectEntry {
+                    layout: Layout::Default,
+                    custom_path: None,
+                    host: None,
+                    repository: Some("https://github.com/thompsonson/dev.git".to_string()),
+                    responsibility: Some("Maintain dev session workflows".to_string()),
+                    worktrees: std::collections::HashMap::new(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let mgr = DevManager {
+            config,
+            projects: vec![DiscoveredProject {
+                display_name: "dev".to_string(),
+                full_path: PathBuf::from("/tmp/dev"),
+            }],
+            projects_dir: PathBuf::from("/tmp"),
+            tmux: Box::new(MockTmux::new()),
+            local_hostname: "pop-mini".to_string(),
+        };
+
+        let output = mgr.list().unwrap();
+        let project = &output.projects[0];
+        assert_eq!(
+            project.repository.as_deref(),
+            Some("https://github.com/thompsonson/dev")
+        );
+        assert_eq!(project.responsibility, "Maintain dev session workflows");
+    }
+
+    #[test]
+    fn repository_normalization_preserves_unparseable_values() {
+        assert_eq!(
+            normalize_repository_value("git@gitlab.com:owner/repo.git"),
+            "https://gitlab.com/owner/repo"
+        );
+        assert_eq!(
+            normalize_repository_value("https://github.com/owner/repo.git"),
+            "https://github.com/owner/repo"
+        );
+        assert_eq!(
+            normalize_repository_value("file:///tmp/repo"),
+            "file:///tmp/repo"
+        );
+    }
+
+    #[test]
+    fn list_uses_git_origin_repository_fallback() {
+        use crate::discovery::DiscoveredProject;
+        use std::process::Command as GitCommand;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        GitCommand::new("git")
+            .arg("init")
+            .arg(tmp.path())
+            .output()
+            .unwrap();
+        GitCommand::new("git")
+            .args(["-C"])
+            .arg(tmp.path())
+            .args(["remote", "add", "origin", "git@github.com:owner/repo.git"])
+            .output()
+            .unwrap();
+
+        let mgr = DevManager {
+            config: DevConfig::default(),
+            projects: vec![DiscoveredProject {
+                display_name: "repo".to_string(),
+                full_path: tmp.path().to_path_buf(),
+            }],
+            projects_dir: tmp.path().parent().unwrap().to_path_buf(),
+            tmux: Box::new(MockTmux::new()),
+            local_hostname: "pop-mini".to_string(),
+        };
+
+        let output = mgr.list().unwrap();
+        assert_eq!(
+            output.projects[0].repository.as_deref(),
+            Some("https://github.com/owner/repo")
+        );
     }
 }
