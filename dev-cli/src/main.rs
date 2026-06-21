@@ -1,4 +1,5 @@
 use std::io::{self, BufRead, Write};
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -136,6 +137,14 @@ fn run() -> Result<()> {
             let tail: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
             cmd_run_in(&tail)
         }
+        Some("peek") => {
+            let tail: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
+            cmd_peek(&tail, local)
+        }
+        Some("inspect") => {
+            let tail: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
+            cmd_inspect(&tail, local)
+        }
         Some("send") => {
             let tail: Vec<String> = args[1..].iter().map(|s| s.to_string()).collect();
             cmd_send(&tail)
@@ -160,6 +169,8 @@ USAGE
   dev detach              Detach from current tmux session
   dev kill <name>         Kill a session
   dev kill-all            Kill all sessions (with confirmation)
+  dev peek <session>      Print latest pane content without interacting
+  dev inspect <session>   JSON session metadata, git state, and pane content
   dev send <session>[:<window>.<pane>] <message...>
                           Send a message to a pane (default pane: 1.1)
   dev doctor [--config F] Check environment and config
@@ -906,6 +917,318 @@ fn cmd_daemon() -> Result<()> {
     dev_lib::daemon::run(&path)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct PeekOptions {
+    session: String,
+    pane: String,
+    lines: usize,
+    json_out: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct InspectOptions {
+    session: String,
+    lines: usize,
+    full: bool,
+}
+
+fn parse_peek_options(args: &[String]) -> Result<PeekOptions> {
+    let mut session: Option<String> = None;
+    let mut pane = "1.1".to_string();
+    let mut lines = 80usize;
+    let mut json_out = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--pane" => {
+                pane = args
+                    .get(i + 1)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("--pane requires a value"))?;
+                i += 2;
+            }
+            "--lines" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--lines requires a value"))?;
+                lines = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--lines must be an integer"))?;
+                i += 2;
+            }
+            "--json" => {
+                json_out = true;
+                i += 1;
+            }
+            value if value.starts_with('-') => bail!("unknown option: {value}"),
+            value => {
+                if session.is_some() {
+                    bail!("Usage: dev peek <session> [--pane 1.1] [--lines N] [--json]");
+                }
+                session = Some(value.to_string());
+                i += 1;
+            }
+        }
+    }
+
+    let session = session.ok_or_else(|| {
+        anyhow::anyhow!("Usage: dev peek <session> [--pane 1.1] [--lines N] [--json]")
+    })?;
+    Ok(PeekOptions {
+        session,
+        pane,
+        lines,
+        json_out,
+    })
+}
+
+fn parse_inspect_options(args: &[String]) -> Result<InspectOptions> {
+    let mut session: Option<String> = None;
+    let mut lines = 80usize;
+    let mut full = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--lines" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--lines requires a value"))?;
+                lines = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--lines must be an integer"))?;
+                i += 2;
+            }
+            "--full" => {
+                full = true;
+                i += 1;
+            }
+            value if value.starts_with('-') => bail!("unknown option: {value}"),
+            value => {
+                if session.is_some() {
+                    bail!("Usage: dev inspect <session> [--lines N] [--full]");
+                }
+                session = Some(value.to_string());
+                i += 1;
+            }
+        }
+    }
+
+    let session = session
+        .ok_or_else(|| anyhow::anyhow!("Usage: dev inspect <session> [--lines N] [--full]"))?;
+    Ok(InspectOptions {
+        session,
+        lines,
+        full,
+    })
+}
+
+fn cmd_peek(args: &[String], local: bool) -> Result<()> {
+    let opts = parse_peek_options(args)?;
+    if !local {
+        let mgr = DevManager::new()?;
+        if let Some(host) = mgr.remote_host() {
+            let mut fwd: Vec<&str> = vec!["peek", &opts.session];
+            if opts.pane != "1.1" {
+                fwd.extend(["--pane", &opts.pane]);
+            }
+            let lines = opts.lines.to_string();
+            fwd.extend(["--lines", &lines]);
+            if opts.json_out {
+                fwd.push("--json");
+            }
+            return forward_remote(&host, &fwd);
+        }
+    }
+
+    let content = pane_content(&opts.session, &opts.pane, opts.lines)?;
+    if opts.json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "session": opts.session,
+                "pane": opts.pane,
+                "lines": opts.lines,
+                "content": content,
+            }))?
+        );
+    } else {
+        print!("{content}");
+    }
+    Ok(())
+}
+
+fn cmd_inspect(args: &[String], local: bool) -> Result<()> {
+    let opts = parse_inspect_options(args)?;
+    if !local {
+        let mgr = DevManager::new()?;
+        if let Some(host) = mgr.remote_host() {
+            let mut fwd: Vec<&str> = vec!["inspect", &opts.session];
+            let lines = opts.lines.to_string();
+            fwd.extend(["--lines", &lines]);
+            if opts.full {
+                fwd.push("--full");
+            }
+            return forward_remote(&host, &fwd);
+        }
+    }
+
+    let mgr = DevManager::new()?;
+    let list = mgr.list()?;
+    let session = list
+        .sessions
+        .into_iter()
+        .find(|s| s.name == opts.session)
+        .ok_or_else(|| anyhow::anyhow!("session '{}' not found", opts.session))?;
+    let session_value = serde_json::to_value(&session)?;
+    let project_path = session.project_path.as_deref().map(Path::new);
+    let git = inspect_git(project_path, opts.full);
+
+    let pane_count = session.pane_count.max(1);
+    let body = if opts.full {
+        let panes: Vec<_> = (1..=pane_count)
+            .map(|idx| inspect_pane(&session.name, &format!("1.{idx}"), opts.lines, true))
+            .collect();
+        serde_json::json!({
+            "session": session_value,
+            "git": git,
+            "panes": panes,
+        })
+    } else {
+        let content = match pane_content(&session.name, "1.1", opts.lines) {
+            Ok(tail) => serde_json::json!({"pane": "1.1", "tail": tail}),
+            Err(e) => serde_json::json!({"pane": "1.1", "error": e.to_string()}),
+        };
+        serde_json::json!({
+            "session": compact_session_value(&session_value),
+            "git": git,
+            "content": content,
+        })
+    };
+
+    println!("{}", serde_json::to_string_pretty(&body)?);
+    Ok(())
+}
+
+fn pane_content(session: &str, pane: &str, lines: usize) -> Result<String> {
+    let path = format!("/sessions/{session}/panes/{pane}/content?lines={lines}");
+    let resp = http_over_uds("GET", &path, None)?;
+    if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+        bail!("{err}");
+    }
+    Ok(resp
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string())
+}
+
+fn pane_history(session: &str, pane: &str) -> serde_json::Value {
+    let path = format!("/sessions/{session}/panes/{pane}/history");
+    match http_over_uds("GET", &path, None) {
+        Ok(resp) => resp,
+        Err(e) => serde_json::json!({"error": e.to_string()}),
+    }
+}
+
+fn inspect_pane(
+    session: &str,
+    pane: &str,
+    lines: usize,
+    include_history: bool,
+) -> serde_json::Value {
+    let mut value = match pane_content(session, pane, lines) {
+        Ok(content_tail) => serde_json::json!({
+            "target": pane,
+            "content_tail": content_tail,
+        }),
+        Err(e) => serde_json::json!({
+            "target": pane,
+            "error": e.to_string(),
+        }),
+    };
+    if include_history {
+        value["history"] = pane_history(session, pane);
+    }
+    value
+}
+
+fn compact_session_value(session: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "name": session.get("name").cloned().unwrap_or(serde_json::Value::Null),
+        "repository": session.get("repository").cloned().unwrap_or(serde_json::Value::Null),
+        "responsibility": session.get("responsibility").cloned().unwrap_or(serde_json::Value::Null),
+        "project_path": session.get("project_path").cloned().unwrap_or(serde_json::Value::Null),
+    })
+}
+
+fn inspect_git(path: Option<&Path>, full: bool) -> serde_json::Value {
+    let Some(path) = path else {
+        return serde_json::Value::Null;
+    };
+    if !path.exists() {
+        return serde_json::json!({"error": format!("project path not found: {}", path.display())});
+    }
+
+    let branch = git_stdout(path, &["branch", "--show-current"]);
+    let head = git_stdout(path, &["rev-parse", "--short", "HEAD"]);
+    let status_short = git_stdout(path, &["status", "--short"]);
+
+    let status_short = match status_short {
+        Ok(status) => status,
+        Err(e) => return serde_json::json!({"error": e}),
+    };
+    let changed_files = parse_changed_files(&status_short);
+
+    let mut value = serde_json::json!({
+        "branch": branch.unwrap_or_default(),
+        "head": head.unwrap_or_default(),
+        "dirty": !status_short.trim().is_empty(),
+        "changed_files": changed_files,
+    });
+    if full {
+        value["status_short"] = serde_json::Value::String(status_short);
+        value["recent_commits"] = match git_stdout(path, &["log", "--oneline", "-5"]) {
+            Ok(commits) => serde_json::Value::Array(
+                commits
+                    .lines()
+                    .map(|line| serde_json::Value::String(line.to_string()))
+                    .collect(),
+            ),
+            Err(e) => serde_json::json!({"error": e}),
+        };
+    }
+    value
+}
+
+fn git_stdout(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn parse_changed_files(status_short: &str) -> Vec<String> {
+    status_short
+        .lines()
+        .filter_map(|line| {
+            let path = line.get(3..)?.trim();
+            if path.is_empty() {
+                None
+            } else if let Some((_, to)) = path.split_once(" -> ") {
+                Some(to.to_string())
+            } else {
+                Some(path.to_string())
+            }
+        })
+        .collect()
+}
+
 fn cmd_run_in(args: &[String]) -> Result<()> {
     // Parse: dev run-in <session>[:<window>.<pane>] <command...> [--timeout N] [--json]
     let mut positional: Vec<&str> = Vec::new();
@@ -1045,4 +1368,71 @@ fn http_over_uds(
     let body_slice = &raw[body_start..];
     let v: serde_json::Value = serde_json::from_slice(body_slice)?;
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn parse_peek_defaults() {
+        let opts = parse_peek_options(&args(&["dev"])).unwrap();
+        assert_eq!(
+            opts,
+            PeekOptions {
+                session: "dev".to_string(),
+                pane: "1.1".to_string(),
+                lines: 80,
+                json_out: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_peek_options_all_flags() {
+        let opts = parse_peek_options(&args(&[
+            "manta-site",
+            "--pane",
+            "1.2",
+            "--lines",
+            "20",
+            "--json",
+        ]))
+        .unwrap();
+        assert_eq!(opts.session, "manta-site");
+        assert_eq!(opts.pane, "1.2");
+        assert_eq!(opts.lines, 20);
+        assert!(opts.json_out);
+    }
+
+    #[test]
+    fn parse_inspect_defaults() {
+        let opts = parse_inspect_options(&args(&["dev"])).unwrap();
+        assert_eq!(
+            opts,
+            InspectOptions {
+                session: "dev".to_string(),
+                lines: 80,
+                full: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_inspect_full_and_lines() {
+        let opts = parse_inspect_options(&args(&["dev", "--full", "--lines", "25"])).unwrap();
+        assert_eq!(opts.session, "dev");
+        assert_eq!(opts.lines, 25);
+        assert!(opts.full);
+    }
+
+    #[test]
+    fn parse_changed_files_handles_porcelain_status() {
+        let files = parse_changed_files(" M src/main.rs\n?? README.md\nR  old.rs -> new.rs\n");
+        assert_eq!(files, vec!["src/main.rs", "README.md", "new.rs"]);
+    }
 }

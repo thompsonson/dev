@@ -114,6 +114,8 @@ dev kill <name>               Kill a session by name
 dev kill-all                  Kill every session (with confirmation)
 dev layout [name]             Print or switch the default layout
 dev daemon                    Run the Unix-socket API server
+dev peek <session>            Print latest pane content without interacting
+dev inspect <session>         Print JSON session metadata, git state, and pane content
 dev run-in <target> <cmd>     Run a command in a pane and capture its output
 dev send <target> <msg...>    Send a message to a pane (visible to the agent)
 dev help                      Full help text
@@ -153,6 +155,16 @@ dev send manta-site "From dev: can you check the site build failure?"
 ```
 
 Use `gh` for GitHub operations against the reported repository when needed.
+
+For read-only session state, use `dev peek` or `dev inspect`:
+
+```bash
+dev peek manta-site --lines 40
+dev inspect manta-site | jq
+dev inspect manta-site --full | jq
+```
+
+`peek` returns raw visible pane text. `inspect` combines session metadata, git state, and pane content without typing into the target session.
 
 ### Project config
 
