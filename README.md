@@ -140,6 +140,20 @@ dev         default  1      56s
 manta-site  default  1      3m
 ```
 
+Each session and project entry also includes coordination metadata when known:
+
+- `project_path`: local project directory for active sessions, or `null` when unknown.
+- `repository`: informational HTTPS repository URL from config or `git remote get-url origin`.
+- `responsibility`: what that session/project is responsible for.
+
+Agents and clients can use `dev list` as the live discovery mechanism, choose a peer by `repository` or `responsibility`, then send a message:
+
+```bash
+dev send manta-site "From dev: can you check the site build failure?"
+```
+
+Use `gh` for GitHub operations against the reported repository when needed.
+
 ### Project config
 
 Per-project layouts live in `~/.config/dev/config.toml`:
@@ -158,9 +172,14 @@ path = "~/.local/share/chezmoi"
 [project.some-remote]
 layout = "default"
 host = "other-host"
+
+[project.dev]
+path = "~/Projects/thompsonson/dev"
+repository = "https://github.com/thompsonson/dev"
+responsibility = "Maintain the dev CLI, daemon, bootstrap, release, and session-control workflows"
 ```
 
-`layout` is `default` or `claude`; `path` lets a project key point at a custom directory; `host` forwards the command via SSH to another machine.
+`layout` is `default` or `claude`; `path` lets a project key point at a custom directory; `host` forwards the command via SSH to another machine. `repository` and `responsibility` are optional metadata surfaced by `dev list` for agents and clients.
 
 ---
 

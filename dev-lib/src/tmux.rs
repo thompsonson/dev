@@ -28,6 +28,9 @@ pub struct SessionInfo {
     pub attached: bool,
     pub last_activity: u64,
     pub layout: String,
+    pub project_path: Option<String>,
+    pub repository: Option<String>,
+    pub responsibility: String,
 }
 
 /// Trait abstracting tmux operations for testability.
@@ -138,6 +141,9 @@ impl TmuxBackend for RealTmux {
                 attached,
                 last_activity,
                 layout,
+                project_path: None,
+                repository: None,
+                responsibility: String::new(),
             });
         }
         Ok(sessions)
@@ -462,6 +468,9 @@ pub mod mock {
                 attached: false,
                 last_activity: 0,
                 layout: layout.to_string(),
+                project_path: None,
+                repository: None,
+                responsibility: String::new(),
             });
             self.created.borrow_mut().push((
                 name.to_string(),
