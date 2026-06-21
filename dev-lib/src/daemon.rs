@@ -204,6 +204,7 @@ fn route(state: &mut DaemonState, req: &Request) -> Result<(u16, Value)> {
         ("GET", ["sessions"]) => handle_list_sessions(state),
         ("POST", ["sessions"]) => handle_start_session(state, &req.body),
         ("DELETE", ["sessions", name]) => handle_stop_session(state, name),
+        ("GET", ["sessions", name, "inspect"]) => handle_inspect_session(state, name, &req.query),
         ("GET", ["sessions", name, "panes"]) => handle_list_panes(state, name),
         ("GET", ["sessions", name, "panes", pane, "content"]) => {
             handle_pane_content(state, name, pane, &req.query)
@@ -262,35 +263,65 @@ fn handle_list_panes(state: &mut DaemonState, name: &str) -> Result<(u16, Value)
     Ok((200, json!({"session": name, "pane_count": count})))
 }
 
+fn handle_inspect_session(
+    state: &mut DaemonState,
+    name: &str,
+    query: &str,
+) -> Result<(u16, Value)> {
+    let lines = query_param(query, "lines")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(80);
+    let full = query_param(query, "full")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    let list = state.manager.list()?;
+    let session = match list.sessions.into_iter().find(|s| s.name == name) {
+        Some(session) => session,
+        None => return Ok((404, json!({"error": format!("session '{name}' not found")}))),
+    };
+
+    let session_value = serde_json::to_value(&session)?;
+    let project_path = session.project_path.as_deref().map(Path::new);
+    let git = inspect_git(project_path, full);
+
+    let pane_count = session.pane_count.max(1);
+    let body = if full {
+        let panes: Vec<_> = (1..=pane_count)
+            .map(|idx| inspect_pane(state, &session.name, &format!("1.{idx}"), lines, true))
+            .collect();
+        json!({
+            "session": session_value,
+            "git": git,
+            "panes": panes,
+        })
+    } else {
+        let content = match capture_pane(&session.name, "1.1", Some(lines)) {
+            Ok(tail) => json!({"pane": "1.1", "tail": tail}),
+            Err(e) => json!({"pane": "1.1", "error": e.to_string()}),
+        };
+        json!({
+            "session": compact_session_value(&session_value),
+            "git": git,
+            "content": content,
+        })
+    };
+
+    Ok((200, body))
+}
+
 fn handle_pane_content(
     _state: &mut DaemonState,
     name: &str,
     pane: &str,
     query: &str,
 ) -> Result<(u16, Value)> {
-    let lines = query_param(query, "lines");
-    let target = format!("{name}:{pane}");
-    let mut args = vec!["capture-pane", "-p", "-t"];
-    args.push(&target);
-    let start_arg;
-    if let Some(n) = lines.as_ref() {
-        start_arg = format!("-{n}");
-        args.push("-S");
-        args.push(&start_arg);
-    }
-    // Shell out directly — we want the unaltered pane content, not the
-    // error-on-nonzero wrapping the other methods do.
-    let output = std::process::Command::new("tmux").args(&args).output()?;
-    if !output.status.success() {
-        bail!(
-            "capture-pane failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+    let lines = query_param(query, "lines").and_then(|v| v.parse::<usize>().ok());
+    let content = capture_pane(name, pane, lines)?;
     Ok((
         200,
         json!({
-            "content": String::from_utf8_lossy(&output.stdout).to_string()
+            "content": content
         }),
     ))
 }
@@ -403,6 +434,139 @@ fn query_param(query: &str, key: &str) -> Option<String> {
     None
 }
 
+fn capture_pane(session: &str, pane: &str, lines: Option<usize>) -> Result<String> {
+    let target = format!("{session}:{pane}");
+    let mut args = vec!["capture-pane", "-p", "-t"];
+    args.push(&target);
+    let start_arg;
+    if let Some(n) = lines {
+        start_arg = format!("-{n}");
+        args.push("-S");
+        args.push(&start_arg);
+    }
+    // Shell out directly so pane content is returned without TmuxBackend's
+    // nonzero wrapping changing the captured output semantics.
+    let output = std::process::Command::new("tmux").args(&args).output()?;
+    if !output.status.success() {
+        bail!(
+            "capture-pane failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn inspect_pane(
+    state: &mut DaemonState,
+    session: &str,
+    pane: &str,
+    lines: usize,
+    include_history: bool,
+) -> Value {
+    let mut value = match capture_pane(session, pane, Some(lines)) {
+        Ok(content_tail) => json!({
+            "target": pane,
+            "content_tail": content_tail,
+        }),
+        Err(e) => json!({
+            "target": pane,
+            "error": e.to_string(),
+        }),
+    };
+    if include_history {
+        value["history"] = pane_history(state, session, pane);
+    }
+    value
+}
+
+fn pane_history(state: &mut DaemonState, session: &str, pane: &str) -> Value {
+    match handle_history_list(state, session, pane).map(|(_, value)| value) {
+        Ok(value) => value,
+        Err(e) => json!({"error": e.to_string()}),
+    }
+}
+
+fn compact_session_value(session: &Value) -> Value {
+    json!({
+        "name": session.get("name").cloned().unwrap_or(Value::Null),
+        "repository": session.get("repository").cloned().unwrap_or(Value::Null),
+        "responsibility": session.get("responsibility").cloned().unwrap_or(Value::Null),
+        "project_path": session.get("project_path").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn inspect_git(path: Option<&Path>, full: bool) -> Value {
+    let Some(path) = path else {
+        return Value::Null;
+    };
+    if !path.exists() {
+        return json!({"error": format!("project path not found: {}", path.display())});
+    }
+
+    let branch = git_stdout(path, &["branch", "--show-current"]);
+    let head = git_stdout(path, &["rev-parse", "--short", "HEAD"]);
+    let status_short = git_stdout_raw(path, &["status", "--short"]);
+
+    let status_short = match status_short {
+        Ok(status) => status.trim_end().to_string(),
+        Err(e) => return json!({"error": e}),
+    };
+    let changed_files = parse_changed_files(&status_short);
+
+    let mut value = json!({
+        "branch": branch.unwrap_or_default(),
+        "head": head.unwrap_or_default(),
+        "dirty": !status_short.trim().is_empty(),
+        "changed_files": changed_files,
+    });
+    if full {
+        value["status_short"] = Value::String(status_short);
+        value["recent_commits"] = match git_stdout(path, &["log", "--oneline", "-5"]) {
+            Ok(commits) => Value::Array(
+                commits
+                    .lines()
+                    .map(|line| Value::String(line.to_string()))
+                    .collect(),
+            ),
+            Err(e) => json!({"error": e}),
+        };
+    }
+    value
+}
+
+fn git_stdout(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
+    Ok(git_stdout_raw(path, args)?.trim().to_string())
+}
+
+fn git_stdout_raw(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn parse_changed_files(status_short: &str) -> Vec<String> {
+    status_short
+        .lines()
+        .filter_map(|line| {
+            let path = line.get(3..)?.trim();
+            if path.is_empty() {
+                None
+            } else if let Some((_, to)) = path.split_once(" -> ") {
+                Some(to.to_string())
+            } else {
+                Some(path.to_string())
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +579,12 @@ mod tests {
         );
         assert_eq!(query_param("foo=bar", "lines"), None);
         assert_eq!(query_param("", "lines"), None);
+    }
+
+    #[test]
+    fn parse_changed_files_handles_porcelain_status() {
+        let files = parse_changed_files(" M src/main.rs\n?? README.md\nR  old.rs -> new.rs\n");
+        assert_eq!(files, vec!["src/main.rs", "README.md", "new.rs"]);
     }
 
     #[test]
