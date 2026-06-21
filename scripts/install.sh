@@ -194,21 +194,44 @@ install_systemd_unit() {
   esac
   is_termux && die "host role is not supported on Termux — your phone is a client, not the daemon host"
   command -v systemctl >/dev/null 2>&1 || die "systemctl not found"
+  command -v tmux >/dev/null 2>&1 || die "host role needs tmux on PATH"
 
-  local root template
-  root="$(repo_root)"
-  template="${root}/contrib/systemd/dev-daemon.service"
-  [[ -f "$template" ]] || die "missing unit template: $template"
+  local tmux_dir unit_path
+  tmux_dir="$(dirname "$(command -v tmux)")"
+  unit_path="${BIN_DIR}:${tmux_dir}:/usr/local/bin:/usr/bin:/bin"
 
   mkdir -p "$UNIT_DIR"
   log "Installing user unit -> $UNIT_PATH"
-  install -m 0644 "$template" "$UNIT_PATH"
+  cat >"$UNIT_PATH" <<EOF
+[Unit]
+Description=dev tmux control-plane daemon
+Documentation=https://github.com/thompsonson/dev
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=${BIN_PATH} daemon
+Restart=on-failure
+RestartSec=2
+Environment=PATH=${unit_path}
+
+[Install]
+WantedBy=default.target
+EOF
 
   log "Reloading systemd user units"
   systemctl --user daemon-reload
 
-  log "Enabling and starting dev-daemon.service"
-  systemctl --user enable --now dev-daemon.service
+  log "Enabling dev-daemon.service"
+  systemctl --user enable dev-daemon.service
+
+  if systemctl --user is-active --quiet dev-daemon.service; then
+    log "Restarting dev-daemon.service"
+    systemctl --user restart dev-daemon.service
+  else
+    log "Starting dev-daemon.service"
+    systemctl --user start dev-daemon.service
+  fi
 
   log "Unit status:"
   systemctl --user --no-pager status dev-daemon.service || true
