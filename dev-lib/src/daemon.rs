@@ -284,6 +284,11 @@ fn handle_inspect_session(
     let session_value = serde_json::to_value(&session)?;
     let project_path = session.project_path.as_deref().map(Path::new);
     let git = inspect_git(project_path, full);
+    let sandbox = crate::sandbox::sandbox_status(
+        state.manager.config(),
+        state.manager.discovered_projects(),
+        &session.name,
+    );
 
     let pane_count = session.pane_count.max(1);
     let body = if full {
@@ -293,6 +298,7 @@ fn handle_inspect_session(
         json!({
             "session": session_value,
             "git": git,
+            "sandbox": sandbox,
             "panes": panes,
         })
     } else {
@@ -303,6 +309,7 @@ fn handle_inspect_session(
         json!({
             "session": compact_session_value(&session_value),
             "git": git,
+            "sandbox": sandbox,
             "content": content,
         })
     };
