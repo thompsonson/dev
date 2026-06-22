@@ -14,6 +14,38 @@ pub struct SandboxProfile {
     pub json: Value,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SandboxStatus {
+    pub configured: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_generated: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub write: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sockets: Vec<PathBuf>,
+    pub runtime: String,
+}
+
+struct ResolvedSandbox<'a> {
+    sandbox: &'a ProjectSandbox,
+    project_path: &'a Path,
+    basename: String,
+    profile_name: String,
+    base_profile: String,
+    profile_path: PathBuf,
+    sockets: Vec<PathBuf>,
+}
+
 pub fn default_profile_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
@@ -25,49 +57,16 @@ pub fn build_nono_profile(
     projects: &[DiscoveredProject],
     project: &str,
 ) -> Result<SandboxProfile> {
-    let defaults = config.sandbox_defaults();
-    if defaults.backend != "nono" {
-        anyhow::bail!("unsupported sandbox backend: {}", defaults.backend);
-    }
+    let resolved = resolve_sandbox(config, projects, project)?;
 
-    let discovered = resolve::resolve_project(project, projects)
-        .ok_or_else(|| anyhow::anyhow!("project '{project}' not found"))?;
-    let basename = discovered
-        .full_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(&discovered.display_name);
-    let entry = config
-        .project(&discovered.display_name)
-        .or_else(|| config.project(basename));
-    let sandbox = entry.and_then(|entry| entry.sandbox.as_ref());
-
-    let name = sandbox
-        .and_then(|sandbox| sandbox.profile_name.clone())
-        .unwrap_or_else(|| format!("dev-{basename}-opencode"));
-    let base_profile = sandbox
-        .and_then(|sandbox| sandbox.base_profile.clone())
-        .unwrap_or_else(|| defaults.base_profile.clone());
-    let profile_dir = defaults
-        .profile_dir
-        .clone()
-        .unwrap_or_else(default_profile_dir);
-    let path = profile_dir.join(format!("{name}.json"));
-
-    let read = sandbox
-        .map(|sandbox| absolutize_all(&sandbox.read, &discovered.full_path))
-        .unwrap_or_default();
-    let sockets = sandbox
-        .filter(|sandbox| !sandbox.sockets.is_empty())
-        .map(|sandbox| sandbox.sockets.clone())
-        .unwrap_or_else(|| defaults.sockets.clone());
-    let allow = sandbox_write_allow(sandbox, &discovered.full_path);
+    let read = absolutize_all(&resolved.sandbox.read, resolved.project_path);
+    let allow = sandbox_write_allow(Some(resolved.sandbox), resolved.project_path);
 
     let json = json!({
-        "extends": base_profile,
+        "extends": resolved.base_profile,
         "meta": {
-            "name": name,
-            "description": format!("Dev-managed sandbox for {basename}"),
+            "name": resolved.profile_name,
+            "description": format!("Dev-managed sandbox for {}", resolved.basename),
         },
         "groups": {
             "include": []
@@ -78,11 +77,49 @@ pub fn build_nono_profile(
         "filesystem": {
             "allow": allow,
             "read": read,
-            "unix_socket": sockets,
+            "unix_socket": resolved.sockets,
         }
     });
 
-    Ok(SandboxProfile { name, path, json })
+    Ok(SandboxProfile {
+        name: resolved.profile_name,
+        path: resolved.profile_path,
+        json,
+    })
+}
+
+pub fn sandbox_status(
+    config: &DevConfig,
+    projects: &[DiscoveredProject],
+    project: &str,
+) -> SandboxStatus {
+    let Ok(resolved) = resolve_sandbox(config, projects, project) else {
+        return SandboxStatus {
+            configured: false,
+            backend: None,
+            base_profile: None,
+            profile_name: None,
+            profile_path: None,
+            profile_generated: None,
+            write: Vec::new(),
+            read: Vec::new(),
+            sockets: Vec::new(),
+            runtime: "unknown".to_string(),
+        };
+    };
+
+    SandboxStatus {
+        configured: true,
+        backend: Some(config.sandbox_defaults().backend.clone()),
+        base_profile: Some(resolved.base_profile),
+        profile_name: Some(resolved.profile_name),
+        profile_generated: Some(resolved.profile_path.exists()),
+        profile_path: Some(resolved.profile_path),
+        write: resolved.sandbox.write.clone(),
+        read: absolutize_all(&resolved.sandbox.read, resolved.project_path),
+        sockets: resolved.sockets,
+        runtime: "unknown".to_string(),
+    }
 }
 
 pub fn write_profile(profile: &SandboxProfile) -> Result<()> {
@@ -106,6 +143,63 @@ fn sandbox_write_allow(sandbox: Option<&ProjectSandbox>, project_path: &Path) ->
         .filter(|path| path.as_os_str() != ".")
         .map(|path| absolutize(path, project_path))
         .collect()
+}
+
+fn resolve_sandbox<'a>(
+    config: &'a DevConfig,
+    projects: &'a [DiscoveredProject],
+    project: &str,
+) -> Result<ResolvedSandbox<'a>> {
+    let defaults = config.sandbox_defaults();
+    if defaults.backend != "nono" {
+        anyhow::bail!("unsupported sandbox backend: {}", defaults.backend);
+    }
+
+    let discovered = resolve::resolve_project(project, projects)
+        .ok_or_else(|| anyhow::anyhow!("project '{project}' not found"))?;
+    let basename = discovered
+        .full_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&discovered.display_name)
+        .to_string();
+    let entry = config
+        .project(&discovered.display_name)
+        .or_else(|| config.project(&basename))
+        .ok_or_else(|| anyhow::anyhow!("project '{project}' has no config entry"))?;
+    let sandbox = entry
+        .sandbox
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("project '{project}' has no sandbox config"))?;
+
+    let profile_name = sandbox
+        .profile_name
+        .clone()
+        .unwrap_or_else(|| format!("dev-{basename}-opencode"));
+    let base_profile = sandbox
+        .base_profile
+        .clone()
+        .unwrap_or_else(|| defaults.base_profile.clone());
+    let profile_dir = defaults
+        .profile_dir
+        .clone()
+        .unwrap_or_else(default_profile_dir);
+    let profile_path = profile_dir.join(format!("{profile_name}.json"));
+    let sockets = if sandbox.sockets.is_empty() {
+        defaults.sockets.clone()
+    } else {
+        sandbox.sockets.clone()
+    };
+
+    Ok(ResolvedSandbox {
+        sandbox,
+        project_path: &discovered.full_path,
+        basename,
+        profile_name,
+        base_profile,
+        profile_path,
+        sockets,
+    })
 }
 
 fn absolutize_all(paths: &[PathBuf], project_path: &Path) -> Vec<PathBuf> {
@@ -176,5 +270,73 @@ mod tests {
             profile.json["filesystem"]["unix_socket"],
             json!(["/run/user/1000/dev.sock"])
         );
+    }
+
+    #[test]
+    fn sandbox_status_reports_unconfigured_project() {
+        let config = DevConfig::default();
+        let projects = vec![DiscoveredProject {
+            display_name: "dev".to_string(),
+            full_path: PathBuf::from("/home/mt/Projects/thompsonson/dev"),
+        }];
+
+        let status = sandbox_status(&config, &projects, "dev");
+        assert!(!status.configured);
+        assert_eq!(status.runtime, "unknown");
+        assert!(status.profile_generated.is_none());
+    }
+
+    #[test]
+    fn sandbox_status_reports_configured_profile_state() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let defaults = SandboxDefaults {
+            profile_dir: Some(tmp.path().to_path_buf()),
+            ..SandboxDefaults::default()
+        };
+        let config = DevConfig::new_with_sandbox(
+            Layout::Default,
+            None,
+            defaults,
+            [(
+                "manta-site".to_string(),
+                ProjectEntry {
+                    layout: Layout::Default,
+                    custom_path: None,
+                    host: None,
+                    repository: None,
+                    responsibility: None,
+                    sandbox: Some(ProjectSandbox {
+                        write: vec![PathBuf::from(".")],
+                        read: vec![PathBuf::from("/home/mt/Projects/manta")],
+                        sockets: Vec::new(),
+                        base_profile: None,
+                        profile_name: None,
+                    }),
+                    worktrees: HashMap::new(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let projects = vec![DiscoveredProject {
+            display_name: "manta-site".to_string(),
+            full_path: PathBuf::from("/home/mt/Projects/manta/manta-site"),
+        }];
+
+        let status = sandbox_status(&config, &projects, "manta-site");
+        assert!(status.configured);
+        assert_eq!(status.backend.as_deref(), Some("nono"));
+        assert_eq!(
+            status.profile_name.as_deref(),
+            Some("dev-manta-site-opencode")
+        );
+        assert_eq!(status.profile_generated, Some(false));
+
+        let profile_path = status.profile_path.clone().unwrap();
+        std::fs::write(&profile_path, "{}").unwrap();
+        let status = sandbox_status(&config, &projects, "manta-site");
+        assert_eq!(status.profile_generated, Some(true));
+        assert_eq!(status.write, vec![PathBuf::from(".")]);
+        assert_eq!(status.read, vec![PathBuf::from("/home/mt/Projects/manta")]);
     }
 }
