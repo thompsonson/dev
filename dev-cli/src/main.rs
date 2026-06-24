@@ -161,8 +161,8 @@ dev - Persistent tmux session manager for multi-device development
 USAGE
   dev                     Interactive picker (fzf or numbered fallback)
   dev <project>           Create or attach to session for <project>
-  dev claude <project>    Force claude+shell layout (vertical split)
-  dev layout [name]       Show or change layout (claude = add claude pane)
+  dev claude <project>    Legacy shortcut: start project with claude split (agent left, shell right)
+  dev layout [name]       Legacy pane helper: show or change pane arrangement
   dev list                JSON output of sessions and projects
   dev start <project>     Start a session without attaching
   dev stop <session>      Stop (kill) a session
@@ -189,33 +189,28 @@ FLAGS
                           (applies to: dev, list, stop, kill-all)
   --force / -y            Skip confirmation prompt (applies to: kill-all)
 
-LAYOUTS
-  default                 Single shell pane in the project directory
-  claude                  Vertical split: claude (left) + shell (right)
-
 PROJECT DISCOVERY
   Projects are auto-discovered from ~/Projects (up to 3 levels deep).
   A project is any directory containing a .git folder.
   If names collide, the category/project form is used.
 
 CONFIGURATION
-  Per-project layouts are configured in ~/.config/dev/config.toml:
+  Per-project settings are configured in ~/.config/dev/config.toml:
 
     [defaults]
-    layout = \"default\"
-
-    [project.atomicguard]
-    layout = \"claude\"
     host = \"myserver\"
 
-    [project.dotfiles]
-    layout = \"claude\"
-    path = \"~/.local/share/chezmoi\"
+    [project.web-app]
+    host = \"myserver\"
+
+    [project.app-config]
+    path = \"~/.local/share/app-config\"
 
   Fields:
-  - layout: default, claude
-  - path:   optional custom directory (expands ~); omit for ~/Projects projects
-  - host:   optional SSH hostname; omit for local projects
+  - layout:   legacy pane arrangement (default or claude)
+  - path:     optional custom directory (expands ~); omit for ~/Projects projects
+  - host:     optional SSH hostname; omit for local projects
+  - sandbox:  sandbox policy (see dev sandbox show/generate)
 "
     );
 }

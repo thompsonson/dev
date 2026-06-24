@@ -34,7 +34,7 @@ The domain config. It owns inheritance, defaulting, path expansion, and config-l
 
 **ResolvedSessionConfig**
 
-The effective config for one session identity. It contains resolved layout, host, optional path, and other values after applying inheritance in the order defaults -> project -> worktree.
+The effective config for one session identity. It contains resolved values (including legacy layout) after applying inheritance in the order defaults -> project -> worktree.
 
 ## Session Identity
 

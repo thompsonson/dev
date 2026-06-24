@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft
+Draft — layout section updated 2026-06-21: layout is retained for backward compatibility but is no longer the primary abstraction for new workflow design. Future work should prefer session identity, agent, and sandbox policy over layout as the primary concern. See #84.
 
 ## Context
 

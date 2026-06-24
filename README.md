@@ -105,14 +105,14 @@ Requires `tmux` on `PATH`. Tested on Linux and macOS. The `--systemd` flag is Li
 ```
 dev                           Interactive picker (fzf or numbered fallback)
 dev <project>                 Create or attach a session for <project>
-dev claude <project>          Force the "claude" split layout
+dev claude <project>          Legacy shortcut: start project with claude+shell split
 dev start <project> [layout]  Create a session without attaching
 dev stop <session>            Kill a session
 dev list                      Print sessions and known projects as JSON
 dev detach                    Detach from the current tmux session
 dev kill <name>               Kill a session by name
 dev kill-all                  Kill every session (with confirmation)
-dev layout [name]             Print or switch the default layout
+dev layout [name]             Legacy pane helper: show or change pane arrangement
 dev daemon                    Run the Unix-socket API server
 dev peek <session>            Print latest pane content without interacting
 dev inspect <session>         Print JSON session metadata, git state, and pane content
@@ -204,30 +204,39 @@ This starts a new process. It does not ask the already-running TUI agent in the 
 
 ### Project config
 
-Per-project layouts live in `~/.config/dev/config.toml`:
+Per-project settings live in `~/.config/dev/config.toml`:
 
 ```toml
 [defaults]
-layout = "default"
+host = "dev-host"
 
-[project.atomicguard]
-layout = "claude"
+[project.web-app]
+host = "dev-host"
 
-[project.dotfiles]
-layout = "claude"
-path = "~/.local/share/chezmoi"
+[project.app-config]
+path = "~/.local/share/app-config"
 
-[project.some-remote]
-layout = "default"
-host = "other-host"
+[project.remote-app]
+host = "remote-host"
 
 [project.dev]
 path = "~/Projects/thompsonson/dev"
 repository = "https://github.com/thompsonson/dev"
 responsibility = "Maintain the dev CLI, daemon, bootstrap, release, and session-control workflows"
+
+[project.dev.sandbox]
+backend = "nono"
+base_profile = "always-further/opencode"
 ```
 
-`layout` is `default` or `claude`; `path` lets a project key point at a custom directory; `host` forwards the command via SSH to another machine. `repository` and `responsibility` are optional metadata surfaced by `dev list` for agents and clients.
+Fields:
+
+- `layout`: legacy pane arrangement (`default` or `claude`), still supported for compatibility.
+- `path`: optional custom directory (expands `~`); omit for `~/Projects` projects.
+- `host`: optional SSH hostname; omit for local projects.
+- `repository`: optional metadata surfaced by `dev list` for agents and clients.
+- `responsibility`: what this session/project is responsible for.
+- `sandbox`: optional sandbox policy (see `dev sandbox show/generate`).
 
 ---
 
