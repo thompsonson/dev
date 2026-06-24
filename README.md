@@ -5,7 +5,7 @@ A tmux session manager and control plane. Two things in one repo:
 1. **A CLI** (`dev`) — open, list, and kill persistent tmux sessions for your projects. A Rust port of the original [`dot_local/bin/executable_dev`](https://github.com/thompsonson/dotfiles) bash script.
 2. **A local daemon** (`dev daemon`) — exposes that same tmux control surface as a Unix-socket JSON API, so other tools (effectors, agents, UIs) can drive tmux without reimplementing subprocess plumbing or MQTT routing.
 
-If you just want to SSH into a box and `dev my-project` into a session that survives disconnects, you only need §1 (User). If you're building an effector or an agent that needs to run a command in a tmux pane and capture its output, you want §2 (Integrator).
+If you just want to SSH into a box and `dev my-project` into a session that survives disconnects, you only need §1 (User). If you're building an effector or an agent that needs to run a command from a session's current project directory and capture its output, you want §2 (Integrator).
 
 ---
 
@@ -116,7 +116,7 @@ dev layout [name]             Print or switch the default layout
 dev daemon                    Run the Unix-socket API server
 dev peek <session>            Print latest pane content without interacting
 dev inspect <session>         Print JSON session metadata, git state, and pane content
-dev run-in <target> <cmd>     Run a command in a pane and capture its output
+dev run-in <target> <cmd>     Run a background command from the pane cwd and capture output
 dev send <target> <msg...>    Send a message to a pane (visible to the agent)
 dev help                      Full help text
 ```
@@ -166,6 +166,42 @@ dev inspect web-app --full | jq
 
 `peek` returns raw visible pane text. `inspect` combines session metadata, git state, and pane content without typing into the target session.
 
+### Choosing `send` vs `run-in`
+
+| Use case | Command |
+|---|---|
+| Ask an active Claude/OpenCode TUI agent | `dev send <session> "..."` |
+| Run a shell command and capture stdout/exit | `dev run-in <session> "cmd"` |
+| Ask a new non-interactive agent process | `dev run-in <session> 'opencode run "...prompt..."'` |
+| Read state without interacting | `dev peek`, `dev inspect` |
+
+Use `dev send` when the target pane is already running an interactive agent such as Claude Code or OpenCode:
+
+```bash
+dev send web-app "Please run the standard tests and report the result."
+```
+
+`send` injects visible text into the target pane and presses Enter. The active TUI sees it.
+
+Use `dev run-in` when you need deterministic command execution and captured output:
+
+```bash
+dev run-in web-app "git status --short"
+dev run-in web-app "python manage.py test" --timeout 120
+dev run-in web-app "git status --short" --json
+```
+
+`run-in` does not type into the visible pane and does not communicate with an already-running TUI agent. It reads the target pane's current working directory, runs the command in a background `/bin/sh` via tmux, captures stdout and exit code, and leaves the pane untouched.
+
+If an agent CLI supports non-interactive execution and exits, `run-in` can start a separate agent process and capture its answer:
+
+```bash
+dev run-in web-app 'opencode run "What tests should I run for this repo?"'
+dev run-in web-app 'claude -p "Summarize current git state"'
+```
+
+This starts a new process. It does not ask the already-running TUI agent in the pane. For that, use `dev send`.
+
 ### Project config
 
 Per-project layouts live in `~/.config/dev/config.toml`:
@@ -199,9 +235,9 @@ responsibility = "Maintain the dev CLI, daemon, bootstrap, release, and session-
 
 ### Why a daemon
 
-Lots of tools need to "run this command inside that tmux pane and tell me what happened." Each one tends to reinvent the same few tmux subprocess calls, then invents its own way to capture output (which tmux's fire-and-forget `send-keys` does not give you). The `dev` daemon centralises that:
+Lots of tools need to "run this command using that pane's current working directory and tell me what happened." Each one tends to reinvent the same few tmux subprocess calls, then invents its own way to capture output (which tmux's fire-and-forget `send-keys` does not give you). The `dev` daemon centralises that:
 
-- **One process**, one implementation of pane-output capture (the marker-sandwich technique), one place to fix bugs in it.
+- **One process**, one implementation of command output capture via daemon-managed background execution and staging files, one place to fix bugs in it.
 - **A local Unix socket** — no network, no auth story, just filesystem permissions on `~/.local/run/dev.sock`.
 - **Two consumer styles on the same backend:** observe + interact (list sessions, capture content, send keys to a pane — for UIs and agents) and run + capture (synchronous request/response with exit code — for effectors that need a structured result to feed a guard). `dev send <session> <message>` and `dev run-in <session> <command>` are the CLI interfaces for these two styles respectively.
 
@@ -334,13 +370,12 @@ The CLI is itself a thin client of the daemon, so behaviour matches exactly.
 
 ### Semantics worth knowing
 
-- **`stdout` is raw pane capture, not clean process output.** The daemon's `run_and_capture` works by sending start/end marker lines around your command and slicing `tmux capture-pane` output between them. That slice includes shell prompt redraws, the command echo, and anything else the terminal rendered — it is what a human would see in that pane. Post-guards that want just the command output should strip prompt lines themselves, or run against a pane using a minimal shell (`sh -c`) with a prompt like `PS1=`.
-- **Marker matching is strict.** The end marker is matched as `END_<uuid> <digits>` on a whole line — a command that echoes the marker text in its own output cannot cause a false early match (regression-tested in `dev-lib/src/tmux.rs`).
-- **`exit_code` is the shell's `$?`.** It comes from `echo "END_<uuid> $?"` after the command, so you get the exact exit status of the last statement the shell executed — including shell builtins and pipeline tails.
-- **Timeouts are enforced by polling `capture-pane` every 100ms** for the end marker. On timeout the daemon returns HTTP 500 with an error and the command keeps running inside the pane — the daemon does not kill the command for you. If you need hard cancellation, `POST /keys` with `C-c` or similar.
-- **`duration_ms` is wall-clock time inside the daemon**, measured from the first `send-keys` to the marker sighting. It includes polling latency; treat it as a lower bound.
-- **History is per-pane, keyed by `"<session>:<pane>"`.** If you rename a session or rebuild a pane, history for the old key stays in memory until the daemon restarts or is evicted by the 50-record cap.
-- **No concurrent `run`s on the same pane.** The daemon handles one request at a time, but even so, two back-to-back `run_and_capture` calls against the same pane would race each other's markers if you fanned out across connections. Serialise at the caller if you care.
+- **`run-in` output is command stdout, not pane capture.** The daemon uses `tmux run-shell -b` to start a background `/bin/sh`, redirects stdout/stderr to daemon-managed staging files, records the exit code, and returns stdout plus exit status. The visible pane is untouched.
+- **`run-in` starts in the target pane's current working directory.** It does not run inside the pane's interactive shell. Aliases, shell functions, exports, and directory changes from that shell do not carry over unless they are part of the command itself.
+- **stderr is not currently returned by the CLI response.** The daemon stages it separately for execution bookkeeping, but the response shape exposes stdout, exit code, duration, and marker id.
+- **Timeouts are enforced by polling the daemon staging files.** On timeout the daemon returns HTTP 500 with an error and the background command may keep running; the daemon does not kill it for you.
+- **`duration_ms` is wall-clock time inside the daemon**, measured from dispatch to completion detection. It includes polling latency; treat it as a lower bound.
+- **History is per-pane, keyed by `"<session>:<pane>"`.** `run-in` records command results against the target pane key even though execution happens in a background shell. If you rename a session or rebuild a pane, history for the old key stays in memory until the daemon restarts or is evicted by the 50-record cap.
 
 ---
 

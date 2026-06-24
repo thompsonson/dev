@@ -24,7 +24,7 @@
 | `dev detach` | Detach from current tmux session |
 | `dev layout [name]` | Print or switch the default layout |
 | `dev daemon` | Run the Unix socket API server |
-| `dev run-in <session>[:<w>.<p>] <cmd> [--timeout N] [--json]` | Run command in pane, capture stdout/exit code (pane sees nothing) |
+| `dev run-in <session>[:<w>.<p>] <cmd> [--timeout N] [--json]` | Run background command from pane cwd, capture stdout/exit code; pane sees nothing |
 | `dev send <session>[:<w>.<p>] <message...>` | Send message as keystrokes to pane (visible to agent; default pane: `1.1`) |
 | `dev doctor [--config F]` | Check environment and config |
 | `dev update [--check]` | Check for and apply updates from GitHub releases |
@@ -58,7 +58,7 @@ The daemon listens on a Unix domain socket (`$XDG_RUNTIME_DIR/dev.sock` or `~/.l
 ### Key distinctions
 
 - `POST /sessions/:name/panes/:id/keys` — injects keystrokes via `tmux send-keys`; the pane and any agent running in it sees the input. `enter` defaults to `true`.
-- `POST /sessions/:name/panes/:id/run` — dispatches via `tmux run-shell -b`; the pane sees nothing. Stdout/stderr are captured to staging files and returned to the caller. Result is stored in the in-memory history ring buffer (cap: 50 per pane).
+- `POST /sessions/:name/panes/:id/run` — dispatches via `tmux run-shell -b` from the pane's current working directory; the pane sees nothing. Stdout/stderr are captured to staging files, stdout and exit status are returned to the caller, and the result is stored in the in-memory history ring buffer (cap: 50 per pane).
 
 ### HistoryRecord shape
 
