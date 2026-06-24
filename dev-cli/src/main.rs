@@ -171,6 +171,8 @@ USAGE
   dev kill-all            Kill all sessions (with confirmation)
   dev peek <session>      Print latest pane content without interacting
   dev inspect <session>   JSON session metadata, git state, and pane content
+  dev run-in <session>[:<window>.<pane>] <command...>
+                          Run background command from pane cwd and capture output
   dev send <session>[:<window>.<pane>] <message...>
                           Send a message to a pane (default pane: 1.1)
   dev sandbox show <project>
