@@ -80,6 +80,8 @@ pub struct RawProjectSandbox {
     #[serde(default)]
     pub read: Vec<PathBuf>,
     #[serde(default)]
+    pub allow: Vec<PathBuf>,
+    #[serde(default)]
     pub sockets: Vec<PathBuf>,
     pub base_profile: Option<String>,
     pub profile_name: Option<String>,
@@ -132,6 +134,7 @@ impl Default for SandboxDefaults {
 pub struct ProjectSandbox {
     pub write: Vec<PathBuf>,
     pub read: Vec<PathBuf>,
+    pub allow: Vec<PathBuf>,
     pub sockets: Vec<PathBuf>,
     pub base_profile: Option<String>,
     pub profile_name: Option<String>,
@@ -247,6 +250,11 @@ impl DevConfig {
                     .collect(),
                 read: sandbox
                     .read
+                    .into_iter()
+                    .map(|p| expand_home(p, home))
+                    .collect(),
+                allow: sandbox
+                    .allow
                     .into_iter()
                     .map(|p| expand_home(p, home))
                     .collect(),
@@ -586,6 +594,7 @@ mod tests {
             [project.web-app.sandbox]
             write = ["."]
             read = ["~/Projects/team-a"]
+            allow = ["~/.config/gh"]
             "#,
             &home(),
         )
@@ -601,6 +610,10 @@ mod tests {
         assert_eq!(
             sandbox.read,
             vec![PathBuf::from("/home/testuser/Projects/team-a")]
+        );
+        assert_eq!(
+            sandbox.allow,
+            vec![PathBuf::from("/home/testuser/.config/gh")]
         );
     }
 

@@ -32,6 +32,8 @@ pub struct SandboxStatus {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub read: Vec<PathBuf>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sockets: Vec<PathBuf>,
     pub runtime: String,
 }
@@ -60,7 +62,11 @@ pub fn build_nono_profile(
     let resolved = resolve_sandbox(config, projects, project)?;
 
     let read = absolutize_all(&resolved.sandbox.read, resolved.project_path);
-    let allow = sandbox_write_allow(Some(resolved.sandbox), resolved.project_path);
+    let allow = [
+        sandbox_write_allow(Some(resolved.sandbox), resolved.project_path),
+        absolutize_all(&resolved.sandbox.allow, resolved.project_path),
+    ]
+    .concat();
 
     let json = json!({
         "extends": resolved.base_profile,
@@ -103,6 +109,7 @@ pub fn sandbox_status(
             profile_generated: None,
             write: Vec::new(),
             read: Vec::new(),
+            allow: Vec::new(),
             sockets: Vec::new(),
             runtime: "unknown".to_string(),
         };
@@ -117,6 +124,7 @@ pub fn sandbox_status(
         profile_path: Some(resolved.profile_path),
         write: resolved.sandbox.write.clone(),
         read: absolutize_all(&resolved.sandbox.read, resolved.project_path),
+        allow: absolutize_all(&resolved.sandbox.allow, resolved.project_path),
         sockets: resolved.sockets,
         runtime: "unknown".to_string(),
     }
@@ -243,6 +251,7 @@ mod tests {
                     sandbox: Some(ProjectSandbox {
                         write: vec![PathBuf::from(".")],
                         read: vec![PathBuf::from("/home/testuser/Projects/team-a")],
+                        allow: vec![PathBuf::from("/home/testuser/.config/gh")],
                         sockets: Vec::new(),
                         base_profile: None,
                         profile_name: None,
@@ -261,7 +270,10 @@ mod tests {
         let profile = build_nono_profile(&config, &projects, "web-app").unwrap();
         assert_eq!(profile.name, "dev-web-app-opencode");
         assert_eq!(profile.json["extends"], "always-further/opencode");
-        assert_eq!(profile.json["filesystem"]["allow"], json!([]));
+        assert_eq!(
+            profile.json["filesystem"]["allow"],
+            json!(["/home/testuser/.config/gh"])
+        );
         assert_eq!(
             profile.json["filesystem"]["read"],
             json!(["/home/testuser/Projects/team-a"])
@@ -308,6 +320,7 @@ mod tests {
                     sandbox: Some(ProjectSandbox {
                         write: vec![PathBuf::from(".")],
                         read: vec![PathBuf::from("/home/testuser/Projects/team-a")],
+                        allow: Vec::new(),
                         sockets: Vec::new(),
                         base_profile: None,
                         profile_name: None,
