@@ -178,7 +178,7 @@ dev inspect manta-site --full | jq
 Use `dev send` when the target pane is already running an interactive agent such as Claude Code or OpenCode:
 
 ```bash
-dev send manta-site "Please run the standard tests and report the result."
+dev send web-app "Please run the standard tests and report the result."
 ```
 
 `send` injects visible text into the target pane and presses Enter. The active TUI sees it.
@@ -186,9 +186,9 @@ dev send manta-site "Please run the standard tests and report the result."
 Use `dev run-in` when you need deterministic command execution and captured output:
 
 ```bash
-dev run-in manta-site "git status --short"
-dev run-in manta-site "python manage.py test" --timeout 120
-dev run-in manta-site "git status --short" --json
+dev run-in web-app "git status --short"
+dev run-in web-app "python manage.py test" --timeout 120
+dev run-in web-app "git status --short" --json
 ```
 
 `run-in` does not type into the visible pane and does not communicate with an already-running TUI agent. It reads the target pane's current working directory, runs the command in a background `/bin/sh` via tmux, captures stdout and exit code, and leaves the pane untouched.
@@ -196,8 +196,8 @@ dev run-in manta-site "git status --short" --json
 If an agent CLI supports non-interactive execution and exits, `run-in` can start a separate agent process and capture its answer:
 
 ```bash
-dev run-in manta-site 'opencode run "What tests should I run for this repo?"'
-dev run-in manta-site 'claude -p "Summarize current git state"'
+dev run-in web-app 'opencode run "What tests should I run for this repo?"'
+dev run-in web-app 'claude -p "Summarize current git state"'
 ```
 
 This starts a new process. It does not ask the already-running TUI agent in the pane. For that, use `dev send`.
