@@ -43,6 +43,10 @@ The daemon already implements `POST /sessions/:name/panes/:id/keys`, which calls
 
 For agent-to-agent messaging, the target agent must see the message. The `/run` model is unsuitable; the `/keys` model is correct.
 
+### Documentation note
+
+User-facing docs should describe `dev run-in` as background command execution from the target pane's current working directory, not as running inside the visible pane shell. `run-in` does not type into the pane and does not communicate with an already-running TUI agent.
+
 ## Options considered
 
 **Option 1 — New `dev send` subcommand** *(chosen)*
