@@ -208,16 +208,16 @@ Per-project settings live in `~/.config/dev/config.toml`:
 
 ```toml
 [defaults]
-host = "pop-mini"
+host = "dev-host"
 
-[project.atomicguard]
-host = "pop-mini"
+[project.web-app]
+host = "dev-host"
 
-[project.dotfiles]
-path = "~/.local/share/chezmoi"
+[project.app-config]
+path = "~/.local/share/app-config"
 
-[project.some-remote]
-host = "other-host"
+[project.remote-app]
+host = "remote-host"
 
 [project.dev]
 path = "~/Projects/thompsonson/dev"

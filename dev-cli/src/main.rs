@@ -200,11 +200,11 @@ CONFIGURATION
     [defaults]
     host = \"myserver\"
 
-    [project.atomicguard]
+    [project.web-app]
     host = \"myserver\"
 
-    [project.dotfiles]
-    path = \"~/.local/share/chezmoi\"
+    [project.app-config]
+    path = \"~/.local/share/app-config\"
 
   Fields:
   - layout:   legacy pane arrangement (default or claude)
