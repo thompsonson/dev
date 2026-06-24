@@ -10,8 +10,8 @@ The current config format is a hand-parsed INI-style file at `~/.config/dev/conf
 
 ```ini
 default_layout=claude
-default_host=pop-mini
-atomicguard=claude@pop-mini
+default_host=dev-host
+atomicguard=claude@dev-host
 dotfiles=claude:~/.local/share/chezmoi
 ```
 
@@ -34,7 +34,7 @@ The existing INI parser and `parse_config_str` are removed. The `toml = "0.8"` c
 | Current INI | TOML equivalent |
 |---|---|
 | `default_layout=claude` | `[defaults]` `layout = "claude"` |
-| `default_host=pop-mini` | `[defaults]` `host = "pop-mini"` |
+| `default_host=dev-host` | `[defaults]` `host = "dev-host"` |
 | `myproject=claude` | `[project.myproject]` `layout = "claude"` |
 | `dotfiles=claude:~/.local/share/chezmoi` | `[project.dotfiles]` `layout = "claude"` `path = "~/.local/share/chezmoi"` |
 | `remote=default@server1` | `[project.remote]` `layout = "default"` `host = "server1"` |
@@ -50,11 +50,11 @@ The expected authoring style for a project with worktrees is TOML subtable synta
 ```toml
 [defaults]
 layout = "claude"       # applied when no per-project layout is set
-host   = "pop-mini"     # applied when no per-project host is set
+host   = "dev-host"     # applied when no per-project host is set
 
 [project.atomicguard]
 layout = "claude"
-host   = "pop-mini"
+host   = "dev-host"
 
 [project.atomicguard.worktree.fix-guards]
 layout = "default"      # optional: overrides project layout
@@ -134,8 +134,8 @@ Examples:
 ```
 atomicguard                     local project, main worktree
 atomicguard/fix-guards          local project, named worktree
-pop-mini/atomicguard            explicit host, main worktree
-pop-mini/atomicguard/fix-guards explicit host, named worktree
+dev-host/atomicguard            explicit host, main worktree
+dev-host/atomicguard/fix-guards explicit host, named worktree
 ```
 
 The `dev://` scheme prefix is accepted but optional — `dev atomicguard/fix-guards` and `dev dev://atomicguard/fix-guards` are equivalent. The scheme is stripped before parsing and provides no disambiguation.
@@ -160,7 +160,7 @@ tmux session names cannot contain `/` or `:`. The slug uses `.` as the worktree 
 |---|---|
 | `(local, atomicguard, main)` | `atomicguard` |
 | `(local, atomicguard, fix-guards)` | `atomicguard.fix-guards` |
-| `(pop-mini, atomicguard, main)` | `atomicguard` *(in pop-mini's tmux server)* |
+| `(dev-host, atomicguard, main)` | `atomicguard` *(in dev-host's tmux server)* |
 
 ## Alternatives considered
 

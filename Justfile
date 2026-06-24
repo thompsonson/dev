@@ -27,17 +27,17 @@ release-dev:
     git tag "$tag"
     git push origin "$tag"
 
-# Install dev on this machine as a host (pop-mini)
+# Install dev on this machine as a host (dev-host)
 install-host:
     curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | bash -s -- --host
 
-# Install dev on this machine as a client of pop-mini (stable channel)
+# Install dev on this machine as a client of dev-host (stable channel)
 install-client:
-    curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_HOST=pop-mini bash
+    curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_HOST=dev-host bash
 
-# Install dev on this machine as a client of pop-mini (dev channel)
+# Install dev on this machine as a client of dev-host (dev channel)
 install-client-dev:
-    curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_CHANNEL=dev DEV_HOST=pop-mini bash
+    curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_CHANNEL=dev DEV_HOST=dev-host bash
 
 # Run all tests
 test:

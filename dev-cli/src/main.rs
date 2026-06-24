@@ -1301,12 +1301,7 @@ mod tests {
     #[test]
     fn parse_peek_options_all_flags() {
         let opts = parse_peek_options(&args(&[
-            "web-app",
-            "--pane",
-            "1.2",
-            "--lines",
-            "20",
-            "--json",
+            "web-app", "--pane", "1.2", "--lines", "20", "--json",
         ]))
         .unwrap();
         assert_eq!(opts.session, "web-app");

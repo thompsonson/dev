@@ -5,11 +5,11 @@
 #
 # Quick start:
 #   curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | bash
-#   curl -fsSL .../bootstrap.sh | DEV_HOST=pop-mini bash          # install as a client of pop-mini
+#   curl -fsSL .../bootstrap.sh | DEV_HOST=dev-host bash          # install as a client of dev-host
 #   curl -fsSL .../bootstrap.sh | DEV_CHANNEL=dev bash            # install latest dev build
 #
 # Or, run as a file with flags:
-#   bootstrap.sh --client pop-mini
+#   bootstrap.sh --client dev-host
 #   bootstrap.sh --host
 #   bootstrap.sh --channel dev
 #   bootstrap.sh --version v0.1.0 --prefix ~/.local
@@ -276,7 +276,7 @@ EOF
   *)
     log "Binary installed (no role). Pick one next:"
     echo "    dev daemon                 # run the host daemon directly, or"
-    echo "    bootstrap.sh --host        # systemd host (pop-mini)"
-    echo "    bootstrap.sh --client pop-mini"
+    echo "    bootstrap.sh --host        # systemd host (dev-host)"
+    echo "    bootstrap.sh --client dev-host"
     ;;
 esac

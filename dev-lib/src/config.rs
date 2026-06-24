@@ -496,13 +496,13 @@ mod tests {
             r#"
             [defaults]
             layout = "claude"
-            host = "pop-mini"
+            host = "dev-host"
             "#,
             &home(),
         )
         .unwrap();
         assert_eq!(config.default_layout(), &Layout::Claude);
-        assert_eq!(config.default_host(), Some("pop-mini"));
+        assert_eq!(config.default_host(), Some("dev-host"));
     }
 
     #[test]
@@ -511,7 +511,7 @@ mod tests {
             r#"
             [defaults]
             layout = "claude"
-            host = "pop-mini"
+            host = "dev-host"
 
             [project.atomicguard]
             "#,
@@ -520,7 +520,7 @@ mod tests {
         .unwrap();
         let resolved = config.effective_project_config("atomicguard");
         assert_eq!(resolved.layout, Layout::Claude);
-        assert_eq!(resolved.host.as_deref(), Some("pop-mini"));
+        assert_eq!(resolved.host.as_deref(), Some("dev-host"));
     }
 
     #[test]
@@ -529,7 +529,7 @@ mod tests {
             r#"
             [defaults]
             layout = "default"
-            host = "pop-mini"
+            host = "dev-host"
 
             [project.dotfiles]
             layout = "claude"
@@ -596,12 +596,7 @@ mod tests {
             config.sandbox_defaults().profile_dir.as_deref(),
             Some(Path::new("/home/testuser/.config/dev/sandbox/profiles"))
         );
-        let sandbox = config
-            .project("web-app")
-            .unwrap()
-            .sandbox
-            .as_ref()
-            .unwrap();
+        let sandbox = config.project("web-app").unwrap().sandbox.as_ref().unwrap();
         assert_eq!(sandbox.write, vec![PathBuf::from(".")]);
         assert_eq!(
             sandbox.read,
@@ -615,7 +610,7 @@ mod tests {
             r#"
             [defaults]
             layout = "default"
-            host = "pop-mini"
+            host = "dev-host"
 
             [project.atomicguard]
             layout = "claude"
@@ -629,7 +624,7 @@ mod tests {
         .unwrap();
         let resolved = config.effective_session_config("atomicguard", Some("fix-guards"));
         assert_eq!(resolved.layout, Layout::Default);
-        assert_eq!(resolved.host.as_deref(), Some("pop-mini"));
+        assert_eq!(resolved.host.as_deref(), Some("dev-host"));
         assert_eq!(
             resolved.custom_path.as_deref(),
             Some(Path::new(
@@ -666,14 +661,14 @@ mod tests {
             r#"
             [defaults]
             layout = "claude"
-            host = "pop-mini"
+            host = "dev-host"
             "#,
             &home(),
         )
         .unwrap();
         let resolved = config.effective_project_config("missing");
         assert_eq!(resolved.layout, Layout::Claude);
-        assert_eq!(resolved.host.as_deref(), Some("pop-mini"));
+        assert_eq!(resolved.host.as_deref(), Some("dev-host"));
         assert!(resolved.custom_path.is_none());
     }
 
@@ -720,7 +715,7 @@ mod tests {
             r#"
             [defaults]
             layout = "claude"
-            host = "pop-mini"
+            host = "dev-host"
 
             [project.myproj]
             layout = "default"
@@ -766,7 +761,7 @@ mod tests {
     fn validate_unknown_project_field() {
         use std::io::Write;
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        writeln!(f, "[project.dev]\nhsot = \"pop-mini\"").unwrap();
+        writeln!(f, "[project.dev]\nhsot = \"dev-host\"").unwrap();
         let warnings = validate_config(f.path());
         assert!(warnings.iter().any(|w| w.contains("unknown field")));
     }

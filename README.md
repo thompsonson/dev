@@ -49,12 +49,12 @@ a stable name and reachability). A typical fleet:
 
 | Machine | Command | Result |
 |---|---|---|
-| `pop-mini` (always-on) | `scripts/install.sh --host` | binary + `dev daemon` under systemd --user |
-| laptop | `scripts/install.sh --client pop-mini` | binary + `defaults.host = "pop-mini"` |
-| phone (Termux) | `pkg install rust tmux openssh && scripts/install.sh --client pop-mini` | same, no systemd |
+| `dev-host` (always-on) | `scripts/install.sh --host` | binary + `dev daemon` under systemd --user |
+| laptop | `scripts/install.sh --client dev-host` | binary + `defaults.host = "dev-host"` |
+| phone (Termux) | `pkg install rust tmux openssh && scripts/install.sh --client dev-host` | same, no systemd |
 
 The client role writes `defaults.host` to `~/.config/dev/config.toml`, so `dev <project>`
-on the laptop or phone targets `pop-mini`. On Termux there is no systemd, so the
+on the laptop or phone targets `dev-host`. On Termux there is no systemd, so the
 host role is rejected there — a phone is always a client.
 
 ### Install from a release (no clone, no cargo)
@@ -65,18 +65,18 @@ prebuilt binary from the latest GitHub Release (CI publishes static musl Linux
 binaries that also run under Termux, plus native macOS binaries):
 
 ```bash
-# laptop / pop-mini
+# laptop / dev-host
 curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | bash
 
-# as a client of pop-mini
-curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_HOST=pop-mini bash
+# as a client of dev-host
+curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_HOST=dev-host bash
 ```
 
 On a **phone/tablet (Termux)**, no chezmoi required:
 
 ```bash
 pkg install tmux openssh
-curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_HOST=pop-mini bash
+curl -fsSL https://raw.githubusercontent.com/thompsonson/dev/main/scripts/bootstrap.sh | DEV_HOST=dev-host bash
 ```
 
 The bootstrap detects OS/arch, verifies the published SHA-256, installs to

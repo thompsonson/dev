@@ -607,7 +607,7 @@ mod tests {
     fn resolve_target_default_host_fallback() {
         let config = DevConfig::new(
             Layout::Default,
-            Some("pop-mini".to_string()),
+            Some("dev-host".to_string()),
             Default::default(),
         );
         let mgr = DevManager {
@@ -619,7 +619,7 @@ mod tests {
         };
         assert_eq!(
             mgr.resolve_target("anything"),
-            Target::Remote("pop-mini".to_string())
+            Target::Remote("dev-host".to_string())
         );
     }
 
@@ -627,7 +627,7 @@ mod tests {
     fn resolve_target_default_host_local_is_local() {
         let config = DevConfig::new(
             Layout::Default,
-            Some("pop-mini".to_string()),
+            Some("dev-host".to_string()),
             Default::default(),
         );
         let mgr = DevManager {
@@ -635,7 +635,7 @@ mod tests {
             projects: Vec::new(),
             projects_dir: PathBuf::from("/tmp"),
             tmux: Box::new(MockTmux::new()),
-            local_hostname: "pop-mini".to_string(),
+            local_hostname: "dev-host".to_string(),
         };
         assert_eq!(mgr.resolve_target("anything"), Target::Local);
     }
@@ -723,7 +723,7 @@ mod tests {
             }],
             projects_dir: PathBuf::from("/tmp"),
             tmux: Box::new(mock),
-            local_hostname: "pop-mini".to_string(),
+            local_hostname: "dev-host".to_string(),
         };
 
         let output = mgr.list().unwrap();
@@ -767,7 +767,7 @@ mod tests {
             }],
             projects_dir: PathBuf::from("/tmp"),
             tmux: Box::new(MockTmux::new()),
-            local_hostname: "pop-mini".to_string(),
+            local_hostname: "dev-host".to_string(),
         };
 
         let output = mgr.list().unwrap();
@@ -821,7 +821,7 @@ mod tests {
             }],
             projects_dir: tmp.path().parent().unwrap().to_path_buf(),
             tmux: Box::new(MockTmux::new()),
-            local_hostname: "pop-mini".to_string(),
+            local_hostname: "dev-host".to_string(),
         };
 
         let output = mgr.list().unwrap();

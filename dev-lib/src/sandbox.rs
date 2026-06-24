@@ -242,7 +242,7 @@ mod tests {
                     responsibility: None,
                     sandbox: Some(ProjectSandbox {
                         write: vec![PathBuf::from(".")],
-                        read: vec![PathBuf::from("/home/mt/Projects/team-a")],
+                        read: vec![PathBuf::from("/home/testuser/Projects/team-a")],
                         sockets: Vec::new(),
                         base_profile: None,
                         profile_name: None,
@@ -255,7 +255,7 @@ mod tests {
         );
         let projects = vec![DiscoveredProject {
             display_name: "web-app".to_string(),
-            full_path: PathBuf::from("/home/mt/Projects/team-a/web-app"),
+            full_path: PathBuf::from("/home/testuser/Projects/team-a/web-app"),
         }];
 
         let profile = build_nono_profile(&config, &projects, "web-app").unwrap();
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(profile.json["filesystem"]["allow"], json!([]));
         assert_eq!(
             profile.json["filesystem"]["read"],
-            json!(["/home/mt/Projects/team-a"])
+            json!(["/home/testuser/Projects/team-a"])
         );
         assert_eq!(
             profile.json["filesystem"]["unix_socket"],
@@ -277,7 +277,7 @@ mod tests {
         let config = DevConfig::default();
         let projects = vec![DiscoveredProject {
             display_name: "dev".to_string(),
-            full_path: PathBuf::from("/home/mt/Projects/thompsonson/dev"),
+            full_path: PathBuf::from("/home/testuser/Projects/thompsonson/dev"),
         }];
 
         let status = sandbox_status(&config, &projects, "dev");
@@ -307,7 +307,7 @@ mod tests {
                     responsibility: None,
                     sandbox: Some(ProjectSandbox {
                         write: vec![PathBuf::from(".")],
-                        read: vec![PathBuf::from("/home/mt/Projects/team-a")],
+                        read: vec![PathBuf::from("/home/testuser/Projects/team-a")],
                         sockets: Vec::new(),
                         base_profile: None,
                         profile_name: None,
@@ -320,16 +320,13 @@ mod tests {
         );
         let projects = vec![DiscoveredProject {
             display_name: "web-app".to_string(),
-            full_path: PathBuf::from("/home/mt/Projects/team-a/web-app"),
+            full_path: PathBuf::from("/home/testuser/Projects/team-a/web-app"),
         }];
 
         let status = sandbox_status(&config, &projects, "web-app");
         assert!(status.configured);
         assert_eq!(status.backend.as_deref(), Some("nono"));
-        assert_eq!(
-            status.profile_name.as_deref(),
-            Some("dev-web-app-opencode")
-        );
+        assert_eq!(status.profile_name.as_deref(), Some("dev-web-app-opencode"));
         assert_eq!(status.profile_generated, Some(false));
 
         let profile_path = status.profile_path.clone().unwrap();
@@ -337,6 +334,9 @@ mod tests {
         let status = sandbox_status(&config, &projects, "web-app");
         assert_eq!(status.profile_generated, Some(true));
         assert_eq!(status.write, vec![PathBuf::from(".")]);
-        assert_eq!(status.read, vec![PathBuf::from("/home/mt/Projects/team-a")]);
+        assert_eq!(
+            status.read,
+            vec![PathBuf::from("/home/testuser/Projects/team-a")]
+        );
     }
 }

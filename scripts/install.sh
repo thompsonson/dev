@@ -4,7 +4,7 @@
 #
 #   host    — this machine runs `dev daemon` (the tmux control plane).
 #             On Linux this installs + enables a systemd --user unit.
-#             This is your always-on box (e.g. pop-mini).
+#             This is your always-on box (e.g. dev-host).
 #
 #   client  — this machine drives sessions on a host over SSH.
 #             Installs the binary and records `defaults.host = "HOST"` in
@@ -15,7 +15,7 @@
 #
 # Usage:
 #   scripts/install.sh [--prefix DIR]
-#   scripts/install.sh --host                 # daemon host (pop-mini)
+#   scripts/install.sh --host                 # daemon host (dev-host)
 #   scripts/install.sh --client HOST          # client pointing at HOST
 #   scripts/install.sh --uninstall
 #
@@ -260,6 +260,6 @@ case "$ROLE" in
     echo "    dev daemon"
     echo "Or pick a role:"
     echo "    $0 --host            # this machine is the daemon host"
-    echo "    $0 --client pop-mini # this machine is a client"
+    echo "    $0 --client dev-host # this machine is a client"
     ;;
 esac
