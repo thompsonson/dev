@@ -91,6 +91,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("list") => cmd_list(local),
+        Some("status") => cmd_status(local),
         Some("start") => {
             let project = args.get(1).copied().unwrap_or_else(|| {
                 die("Usage: dev start <project> [layout]");
@@ -231,6 +232,91 @@ fn cmd_list(local: bool) -> Result<()> {
     bail_if_error(&output)?;
     println!("{}", serde_json::to_string(&output)?);
     Ok(())
+}
+
+fn cmd_status(local: bool) -> Result<()> {
+    if !local {
+        if let Ok(Some(host)) = configured_remote_host() {
+            return forward_remote(&host, &["status"]);
+        }
+    }
+    let body = http_over_uds("GET", "/status", None)?;
+    bail_if_error(&body)?;
+
+    let c = Colors::new();
+    let sessions = body["sessions"]
+        .as_array()
+        .map(|a| {
+            let mut s = a.clone();
+            s.sort_by(|a, b| {
+                let al = a["last_activity"].as_u64().unwrap_or(0);
+                let bl = b["last_activity"].as_u64().unwrap_or(0);
+                bl.cmp(&al)
+            });
+            s
+        })
+        .unwrap_or_default();
+
+    // Header
+    println!(
+        "{:<16} {:<9} {:<14} {:<14} {:<6}  RESPONSIBILITY",
+        "SESSION", "STATE", "LAST_ACTIVE", "GIT BRANCH", "DIRTY"
+    );
+
+    for s in &sessions {
+        let name = s["name"].as_str().unwrap_or("?");
+        let attached = s["attached"].as_bool().unwrap_or(false);
+        let state = if attached { "active" } else { "idle" };
+        let last_activity = s["last_activity"].as_u64().unwrap_or(0);
+        let ago = relative_time(last_activity);
+
+        let git = &s["git"];
+        let branch = git["branch"]
+            .as_str()
+            .filter(|b| !b.is_empty())
+            .unwrap_or("-");
+        let dirty = git["dirty"].as_bool().unwrap_or(false);
+        let dirty_mark = if git.is_null() {
+            " "
+        } else if dirty {
+            "\u{25cf}"
+        } else {
+            "\u{25cb}"
+        };
+
+        let responsibility = s["responsibility"].as_str().unwrap_or("");
+
+        let state_display = if attached {
+            format!("{}{}{}", c.green, state, c.nc)
+        } else {
+            state.to_string()
+        };
+
+        println!(
+            "{:<16} {:<9} {:<14} {:<14} {:<6}  {}",
+            name, state_display, ago, branch, dirty_mark, responsibility
+        );
+    }
+
+    Ok(())
+}
+
+fn relative_time(unix_secs: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let diff = now.saturating_sub(unix_secs);
+
+    if diff < 60 {
+        format!("{}s ago", diff)
+    } else if diff < 3600 {
+        format!("{}m ago", diff / 60)
+    } else if diff < 86400 {
+        format!("{}h ago", diff / 3600)
+    } else {
+        format!("{}d ago", diff / 86400)
+    }
 }
 
 fn cmd_start(project: &str, layout: Option<Layout>) -> Result<()> {

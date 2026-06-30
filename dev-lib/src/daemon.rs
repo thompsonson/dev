@@ -202,6 +202,7 @@ fn route(state: &mut DaemonState, req: &Request) -> Result<(u16, Value)> {
 
     match (req.method.as_str(), segs.as_slice()) {
         ("GET", ["sessions"]) => handle_list_sessions(state),
+        ("GET", ["status"]) => handle_status(state),
         ("POST", ["sessions"]) => handle_start_session(state, &req.body),
         ("DELETE", ["sessions", name]) => handle_stop_session(state, name),
         ("GET", ["sessions", name, "inspect"]) => handle_inspect_session(state, name, &req.query),
@@ -233,6 +234,22 @@ fn route(state: &mut DaemonState, req: &Request) -> Result<(u16, Value)> {
 fn handle_list_sessions(state: &mut DaemonState) -> Result<(u16, Value)> {
     let out = state.manager.list()?;
     Ok((200, serde_json::to_value(out)?))
+}
+
+fn handle_status(state: &mut DaemonState) -> Result<(u16, Value)> {
+    let out = state.manager.list()?;
+    let sessions: Vec<Value> = out
+        .sessions
+        .into_iter()
+        .map(|s| {
+            let project_path = s.project_path.as_deref().map(Path::new);
+            let git = inspect_git(project_path, false);
+            let mut v = serde_json::to_value(s).unwrap_or_default();
+            v["git"] = git;
+            v
+        })
+        .collect();
+    Ok((200, json!({ "sessions": sessions })))
 }
 
 #[derive(Deserialize)]
